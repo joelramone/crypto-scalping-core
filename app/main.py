@@ -20,6 +20,14 @@ def run():
         print(f"Price tick: {price}")
         strategy.on_price(price)
 
+    btc_balance = wallet.get_balance("BTC")
+    if btc_balance > 0:
+        last_price = prices[-1]
+        print(
+            f"Closing open BTC position: selling {btc_balance} BTC at {last_price}"
+        )
+        wallet.sell("BTC/USDT", last_price, btc_balance)
+
     print("\n--- FINAL STATE ---")
     print("Balances:", wallet.balances)
     print("Total PnL:", wallet.total_pnl({"BTC": prices[-1]}))
