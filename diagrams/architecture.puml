@@ -1,0 +1,22 @@
+@startuml
+skinparam componentStyle rectangle
+
+component "MarketStream" as MarketStream
+component "FeatureBuilder" as FeatureBuilder
+component "StrategyAgent" as Strategy
+component "RiskAgent" as Risk
+component "SupervisorAgent" as Supervisor
+component "Executor" as Executor
+component "PaperWallet" as Wallet
+component "TradesRepository" as Repo
+
+MarketStream --> FeatureBuilder
+FeatureBuilder --> Strategy
+Strategy --> Risk
+Risk --> Executor : approval
+Executor --> Wallet : execute trade
+Executor --> Repo : persist trade
+Supervisor --> Executor : halt operation
+Risk --> Supervisor : pnl thresholds
+
+@enduml
