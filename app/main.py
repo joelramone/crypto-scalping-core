@@ -6,11 +6,7 @@ from app.utils import metrics
 def run():
     wallet = PaperWallet()
 
-    strategy = StrategyAgent(
-        wallet=wallet,
-        buy_below=49800,
-        sell_above=50200
-    )
+    strategy = StrategyAgent(wallet=wallet)
 
     prices = [
         50000, 49950, 49850, 49790,
