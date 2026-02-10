@@ -1,5 +1,6 @@
 from app.trading.paper_wallet import PaperWallet
 from app.agents.strategy_agent import StrategyAgent
+from app.utils import metrics
 
 
 def run():
@@ -26,7 +27,10 @@ def run():
     print("\n--- FINAL STATE ---")
     print("Balances:", wallet.balances)
     print("Total PnL:", wallet.total_pnl({"BTC": prices[-1]}))
-    print("Trades executed:", len(wallet.trades))
+    print("Trades executed:", metrics.total_trades(wallet.trades))
+    print("Total fees:", metrics.total_fees(wallet.trades))
+    print("Net profit:", metrics.profit_net(wallet.trades))
+    print("Avg profit per trade:", metrics.average_profit_per_trade(wallet.trades))
 
 
 if __name__ == "__main__":
