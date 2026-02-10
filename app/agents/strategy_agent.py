@@ -1,26 +1,26 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Literal
-
-from app.config import Settings
-from app.data.features import FeatureSnapshot
-
-Signal = Literal["buy", "sell", "hold"]
-
-
-@dataclass(frozen=True)
-class StrategyDecision:
-    symbol: str
-    signal: Signal
-    confidence: float
+from app.trading.paper_wallet import PaperWallet
 
 
 class StrategyAgent:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
+    def __init__(self, wallet: PaperWallet, buy_below: float, sell_above: float):
+        self.wallet = wallet
+        self.buy_below = buy_below
+        self.sell_above = sell_above
+        self.in_position = False
 
-    def decide(self, features: FeatureSnapshot) -> StrategyDecision:
-        if not self.settings.strategy_enabled:
-            return StrategyDecision(symbol=features.symbol, signal="hold", confidence=1.0)
-        return StrategyDecision(symbol=features.symbol, signal="hold", confidence=0.0)
+    def on_price(self, price: float):
+        if not self.in_position and price <= self.buy_below:
+            self.buy(price)
+
+        elif self.in_position and price >= self.sell_above:
+            self.sell(price)
+
+    def buy(self, price: float):
+        qty = 0.001  # fixed size for now
+        self.wallet.buy("BTC/USDT", price, qty)
+        self.in_position = True
+
+    def sell(self, price: float):
+        qty = 0.001
+        self.wallet.sell("BTC/USDT", price, qty)
+        self.in_position = False
