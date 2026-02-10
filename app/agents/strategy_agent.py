@@ -15,15 +15,24 @@ class StrategyAgent:
             self.last_price = price
             return
 
-        change_pct = ((price - self.last_price) / self.last_price) * 100
+        if not self.in_position:
+            # porcentajes de entrada relativos al último precio
+            change_pct = ((price - self.last_price) / self.last_price) * 100
+            if change_pct <= self.config["buy_threshold_pct"]:
+                self.buy(price)
+        else:
+            # calcular estado porcentual desde la entrada
+            diff_pct = ((price - self.entry_price) / self.entry_price) * 100
 
-        if not self.in_position and change_pct <= self.config["buy_threshold_pct"]:
-            self.buy(price)
-
-        elif self.in_position:
-            gain_pct = ((price - self.entry_price) / self.entry_price) * 100
-            if gain_pct >= self.config["sell_threshold_pct"]:
+            # Stop Loss
+            if diff_pct <= -abs(self.config.get("stop_loss_pct", 0)):
                 self.sell(price)
+                return
+
+            # Take Profit
+            if diff_pct >= abs(self.config.get("take_profit_pct", 0)):
+                self.sell(price)
+                return
 
         self.last_price = price
 
