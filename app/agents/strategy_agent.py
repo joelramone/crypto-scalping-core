@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.config import Settings
 from app.data.features import FeatureSnapshot
 
 Signal = Literal["buy", "sell", "hold"]
@@ -16,9 +17,10 @@ class StrategyDecision:
 
 
 class StrategyAgent:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
     def decide(self, features: FeatureSnapshot) -> StrategyDecision:
-        if features.momentum > 0.001:
-            return StrategyDecision(symbol=features.symbol, signal="buy", confidence=0.6)
-        if features.momentum < -0.001:
-            return StrategyDecision(symbol=features.symbol, signal="sell", confidence=0.6)
-        return StrategyDecision(symbol=features.symbol, signal="hold", confidence=0.2)
+        if not self.settings.strategy_enabled:
+            return StrategyDecision(symbol=features.symbol, signal="hold", confidence=1.0)
+        return StrategyDecision(symbol=features.symbol, signal="hold", confidence=0.0)

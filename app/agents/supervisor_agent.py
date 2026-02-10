@@ -12,10 +12,12 @@ class SupervisorAgent:
     def stopped(self) -> bool:
         return self._stopped
 
-    def should_stop(self, pnl_today: float) -> bool:
+    def should_stop(self, pnl_today: float, trades_today: int) -> bool:
         if pnl_today <= -self.settings.max_daily_loss:
             self._stopped = True
         if pnl_today >= self.settings.daily_profit_target:
+            self._stopped = True
+        if trades_today >= self.settings.max_trades_per_day:
             self._stopped = True
         return self._stopped
 

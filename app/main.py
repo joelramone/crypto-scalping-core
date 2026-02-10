@@ -21,7 +21,7 @@ def run(paper_mode: bool, steps: int) -> None:
 
     stream = MarketStream(symbol=settings.symbol)
     feature_builder = FeatureBuilder()
-    strategy_agent = StrategyAgent()
+    strategy_agent = StrategyAgent(settings=settings)
     risk_agent = RiskAgent(settings=settings)
     supervisor_agent = SupervisorAgent(settings=settings)
     wallet = PaperWallet(balance=settings.initial_balance)
@@ -29,13 +29,19 @@ def run(paper_mode: bool, steps: int) -> None:
     trades_repo = TradesRepository()
 
     pnl_today = 0.0
+    trades_today = 0
     ticks = stream.stream()
 
     for _ in range(steps):
         tick = next(ticks)
         features = feature_builder.build(tick)
         decision = strategy_agent.decide(features)
-        approval = risk_agent.evaluate(decision=decision, pnl_today=pnl_today, balance=wallet.balance)
+        approval = risk_agent.evaluate(
+            decision=decision,
+            pnl_today=pnl_today,
+            balance=wallet.balance,
+            trades_today=trades_today,
+        )
 
         simulated_exit_price = tick.price * (1 + features.momentum)
         result = executor.execute(
@@ -46,6 +52,7 @@ def run(paper_mode: bool, steps: int) -> None:
         )
 
         if result.executed:
+            trades_today += 1
             pnl_today += result.pnl
             trades_repo.add(
                 TradeRecord(
@@ -62,7 +69,7 @@ def run(paper_mode: bool, steps: int) -> None:
         else:
             logger.info("Trade skipped | reason=%s", result.reason)
 
-        if supervisor_agent.should_stop(pnl_today=pnl_today):
+        if supervisor_agent.should_stop(pnl_today=pnl_today, trades_today=trades_today):
             logger.warning("Supervisor halted operations | pnl_today=%.4f", pnl_today)
             break
 
