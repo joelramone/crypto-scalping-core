@@ -12,7 +12,7 @@ def total_fees(trades: List[Trade]) -> float:
 
 def profit_net(trades: List[Trade]) -> float:
     profit = 0.0
-    for i in range(0, len(trades), 2):
+    for i in range(0, len(trades) - 1, 2):
         buy = trades[i]
         sell = trades[i + 1]
         profit += (sell.price - buy.price) * buy.quantity
@@ -20,6 +20,7 @@ def profit_net(trades: List[Trade]) -> float:
 
 
 def average_profit_per_trade(trades: List[Trade]) -> float:
-    if not trades:
+    closed_trades = len(trades) // 2
+    if closed_trades == 0:
         return 0.0
-    return profit_net(trades) / (len(trades) / 2)
+    return profit_net(trades) / closed_trades
