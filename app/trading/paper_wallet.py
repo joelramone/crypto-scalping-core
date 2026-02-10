@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Dict, List
-
+from datetime import datetime
 
 @dataclass
 class Trade:
@@ -12,9 +11,8 @@ class Trade:
     fee: float
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
-
 class PaperWallet:
-    def __init__(self, initial_balance: float = 250, fee_rate: float = 0.001):
+    def __init__(self, initial_balance: float = 250.0, fee_rate: float = 0.001):
         self.fee_rate = fee_rate
         self.balances: Dict[str, float] = {
             "USDT": initial_balance
