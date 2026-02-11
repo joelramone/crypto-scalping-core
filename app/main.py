@@ -18,18 +18,12 @@ def run():
         prices.append(price)
         price *= (1 + random.uniform(-0.005, 0.005))
 
-    print("Starting paper trading...\n")
-
     for price in prices:
-        print(f"Price tick: {price}")
         strategy.on_price(price)
 
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
         last_price = prices[-1]
-        print(
-            f"Closing open BTC position: selling {btc_balance} BTC at {last_price}"
-        )
         wallet.sell("BTC/USDT", last_price, btc_balance)
 
     gross_profit = metrics.profit_gross(wallet.trades)
@@ -39,13 +33,13 @@ def run():
     avg_profit_per_trade = metrics.average_profit_per_trade(wallet.trades)
     final_balance = wallet.total_pnl({"BTC": prices[-1]})
 
-    print("\n--- FINAL STATE ---")
+    print("--- FINAL STATE ---")
     print("Trades executed:", trades_executed)
     print("Gross profit:", gross_profit)
     print("Net profit:", net_profit)
-    print("Avg profit per trade:", avg_profit_per_trade)
     print("Total fees:", total_fees)
-    print("Balance final:", final_balance)
+    print("Avg profit per trade:", avg_profit_per_trade)
+    print("Final balances:", final_balance)
 
 
 if __name__ == "__main__":
