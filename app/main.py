@@ -39,7 +39,7 @@ def run_single_backtest(ticks: int = 1000, initial_price: float = 50000.0) -> Di
 
     price = initial_price
     for _ in range(ticks):
-        price *= 1 + random.uniform(-0.005, 0.005)
+        price *= 1 + random.uniform(-0.005, 0.005) + 0.0002
         strategy.on_price(price)
 
     btc_balance = wallet.get_balance("BTC")
