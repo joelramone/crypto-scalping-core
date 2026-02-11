@@ -5,41 +5,38 @@ from app.trading.paper_wallet import PaperWallet
 from app.utils import metrics
 
 
-def run():
+def run_single_backtest(ticks: int = 1000, initial_price: float = 50000.0) -> float:
     wallet = PaperWallet()
     strategy = StrategyAgent(wallet=wallet)
 
-    initial_price = 50000
-    ticks = 1000
-
-    prices = []
     price = initial_price
     for _ in range(ticks):
-        prices.append(price)
-        price *= (1 + random.uniform(-0.005, 0.005))
-
-    for price in prices:
+        price *= 1 + random.uniform(-0.005, 0.005)
         strategy.on_price(price)
 
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
-        last_price = prices[-1]
-        wallet.sell("BTC/USDT", last_price, btc_balance)
+        wallet.sell("BTC/USDT", price, btc_balance)
 
-    gross_profit = metrics.profit_gross(wallet.trades)
-    net_profit = metrics.profit_net(wallet.trades)
-    total_fees = metrics.total_fees(wallet.trades)
-    trades_executed = metrics.total_trades(wallet.trades)
-    avg_profit_per_trade = metrics.average_profit_per_trade(wallet.trades)
-    final_balance = wallet.total_pnl({"BTC": prices[-1]})
+    return metrics.profit_net(wallet.trades)
 
-    print("--- FINAL STATE ---")
-    print("Trades executed:", trades_executed)
-    print("Gross profit:", gross_profit)
-    print("Net profit:", net_profit)
-    print("Total fees:", total_fees)
-    print("Avg profit per trade:", avg_profit_per_trade)
-    print("Final balances:", final_balance)
+
+def run(simulations: int = 100):
+    net_profits = [run_single_backtest() for _ in range(simulations)]
+
+    profitable_runs = sum(1 for profit in net_profits if profit > 0)
+    losing_runs = sum(1 for profit in net_profits if profit < 0)
+    average_net_profit = sum(net_profits) / simulations if simulations else 0.0
+    best_run = max(net_profits) if net_profits else 0.0
+    worst_run = min(net_profits) if net_profits else 0.0
+
+    print("--- MONTE CARLO RESULTS ---")
+    print(f"Simulations: {simulations}")
+    print(f"Profitable runs: {profitable_runs}")
+    print(f"Losing runs: {losing_runs}")
+    print(f"Average net profit: {average_net_profit:.6f}")
+    print(f"Best run: {best_run:.6f}")
+    print(f"Worst run: {worst_run:.6f}")
 
 
 if __name__ == "__main__":
