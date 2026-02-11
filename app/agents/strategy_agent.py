@@ -1,48 +1,29 @@
 from collections import deque
 
-from app.trading.paper_wallet import PaperWallet
 from app.config import MODE_500_USD
+from app.trading.paper_wallet import PaperWallet
 
 
 class StrategyAgent:
     def __init__(self, wallet: PaperWallet):
         self.wallet = wallet
         self.config = MODE_500_USD
-        self.reference_price = None
         self.entry_price = None
         self.in_position = False
-        self.recent_prices = deque(maxlen=5)
+        self.last_20_prices = deque(maxlen=20)
 
     def on_price(self, price: float):
-        self.recent_prices.append(price)
-
-        if self.reference_price is None:
-            self.reference_price = price
-            return
-
         if not self.in_position:
-            change_pct = ((price - self.reference_price) / self.reference_price) * 100
-            if change_pct <= self.config["buy_threshold_pct"] and self._has_momentum():
+            if len(self.last_20_prices) == 20 and price > max(self.last_20_prices):
                 self.buy(price)
         else:
             take_profit = self.entry_price * 1.008
             stop_loss = self.entry_price * 0.997
 
-            if price >= take_profit:
+            if price >= take_profit or price <= stop_loss:
                 self.sell(price)
-                self.reference_price = price
-            elif price <= stop_loss:
-                self.sell(price)
-                self.reference_price = price
 
-    def _has_momentum(self) -> bool:
-        if len(self.recent_prices) < 5:
-            return False
-
-        first_price = self.recent_prices[0]
-        last_price = self.recent_prices[-1]
-        momentum_pct = ((last_price - first_price) / first_price) * 100
-        return abs(momentum_pct) > 0.3
+        self.last_20_prices.append(price)
 
     def buy(self, price: float):
         trade_usdt = self.config["trade_size_usdt"]
