@@ -25,11 +25,13 @@ class StrategyAgent:
             if change_pct <= self.config["buy_threshold_pct"] and self._has_momentum():
                 self.buy(price)
         else:
-            diff_pct = ((price - self.entry_price) / self.entry_price) * 100
-            if diff_pct >= self.config["take_profit_pct"]:
+            take_profit = self.entry_price * 1.008
+            stop_loss = self.entry_price * 0.997
+
+            if price >= take_profit:
                 self.sell(price)
                 self.reference_price = price
-            elif diff_pct <= -self.config["stop_loss_pct"]:
+            elif price <= stop_loss:
                 self.sell(price)
                 self.reference_price = price
 
