@@ -138,6 +138,8 @@ def run_single_backtest(
         else 0.0
     )
 
+    signal_diagnostics = strategy.signal_diagnostics_percentages()
+
     return {
         "total_trades": total_trades,
         "total_wins": total_wins,
@@ -150,6 +152,12 @@ def run_single_backtest(
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
         "regime_active_ratio": regime_active_ratio,
+        "signal_evaluations": signal_diagnostics["signal_evaluations"],
+        "price_above_max_last_20_true_pct": signal_diagnostics["price_above_max_last_20_true_pct"],
+        "sma20_above_sma100_true_pct": signal_diagnostics["sma20_above_sma100_true_pct"],
+        "std_short_above_std_long_true_pct": signal_diagnostics["std_short_above_std_long_true_pct"],
+        "slope_positive_true_pct": signal_diagnostics["slope_positive_true_pct"],
+        "all_signal_conditions_true_pct": signal_diagnostics["all_signal_conditions_true_pct"],
     }
 
 
@@ -225,7 +233,18 @@ def _run_market_monte_carlo(
     market_generator_factory: Callable[[float], MarketGenerator],
     simulations: int,
 ) -> None:
-    results = [run_single_backtest(market_generator_factory=market_generator_factory) for _ in range(simulations)]
+    results: List[Dict[str, float]] = []
+    for simulation_index in range(1, simulations + 1):
+        result = run_single_backtest(market_generator_factory=market_generator_factory)
+        results.append(result)
+        print(f"\nSignal diagnostics ({title}) - simulation {simulation_index}/{simulations}")
+        print(f"- Signal evaluations: {int(result['signal_evaluations'])}")
+        print(f"- price > max_last_20 true: {result['price_above_max_last_20_true_pct']:.2f}%")
+        print(f"- sma20 > sma100 true: {result['sma20_above_sma100_true_pct']:.2f}%")
+        print(f"- std_short > std_long true: {result['std_short_above_std_long_true_pct']:.2f}%")
+        print(f"- slope > 0 true: {result['slope_positive_true_pct']:.2f}%")
+        print(f"- all conditions true: {result['all_signal_conditions_true_pct']:.2f}%")
+
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
 
