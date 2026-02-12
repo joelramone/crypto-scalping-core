@@ -21,8 +21,8 @@ class RegimeDetector:
         short_window: int = 20,
         long_window: int = 100,
         momentum_window: int = 20,
-        momentum_threshold: float = 0.01,
-        vol_percentile: float = 0.60,
+        momentum_threshold: float = 0.003,
+        vol_percentile: float = 0.50,
     ) -> None:
         self.short_window = short_window
         self.long_window = long_window
