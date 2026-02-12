@@ -1,4 +1,5 @@
 import random
+from statistics import median, pstdev
 from typing import Callable, Dict, List
 
 from app.agents.strategy_agent import StrategyAgent
@@ -130,12 +131,17 @@ def run_single_backtest(
 
 def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simulations: int) -> None:
     total_runs = len(results)
-    total_net_profit = sum(result["net_profit"] for result in results)
+    net_profits = [result["net_profit"] for result in results]
+    total_net_profit = sum(net_profits)
     total_gross_profit = sum(result["gross_profit"] for result in results)
     total_gross_loss = sum(result["gross_loss"] for result in results)
     total_trades_all_runs = sum(result["total_trades"] for result in results)
+    total_wins_all_runs = sum(result["total_wins"] for result in results)
+    total_losses_all_runs = sum(result["total_losses"] for result in results)
 
     average_net_profit = total_net_profit / total_runs if total_runs else 0.0
+    average_gross_profit = total_gross_profit / total_runs if total_runs else 0.0
+    average_gross_loss = total_gross_loss / total_runs if total_runs else 0.0
     average_win_rate = (
         sum(
             (result["total_wins"] / result["total_trades"]) * 100
@@ -146,17 +152,36 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
         if total_runs
         else 0.0
     )
+    weighted_win_rate = (
+        (total_wins_all_runs / total_trades_all_runs) * 100 if total_trades_all_runs > 0 else 0.0
+    )
     average_trades_per_run = total_trades_all_runs / total_runs if total_runs else 0.0
     profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else 0.0
     expectancy_per_trade = (
         total_net_profit / total_trades_all_runs if total_trades_all_runs > 0 else 0.0
     )
+    net_profit_std = pstdev(net_profits) if len(net_profits) > 1 else 0.0
+    median_net_profit = median(net_profits) if net_profits else 0.0
+    best_run = max(net_profits) if net_profits else 0.0
+    worst_run = min(net_profits) if net_profits else 0.0
+    profitable_runs = sum(1 for value in net_profits if value > 0)
 
     print(f"--- {title} ---")
     print(f"Simulations: {simulations}")
     print(f"Avg net profit: {average_net_profit:.6f}")
+    print(f"Median net profit: {median_net_profit:.6f}")
+    print(f"Net profit std dev: {net_profit_std:.6f}")
+    print(f"Best run net profit: {best_run:.6f}")
+    print(f"Worst run net profit: {worst_run:.6f}")
+    print(f"Profitable runs: {profitable_runs}/{total_runs}")
+    print(f"Avg gross profit: {average_gross_profit:.6f}")
+    print(f"Avg gross loss: {average_gross_loss:.6f}")
     print(f"Avg win rate: {average_win_rate:.2f}%")
+    print(f"Weighted win rate: {weighted_win_rate:.2f}%")
     print(f"Avg trades per run: {average_trades_per_run:.2f}")
+    print(f"Total trades: {total_trades_all_runs}")
+    print(f"Total wins: {total_wins_all_runs}")
+    print(f"Total losses: {total_losses_all_runs}")
     print(f"Profit factor: {profit_factor:.6f}")
     print(f"Expectancy per trade: {expectancy_per_trade:.6f}")
 

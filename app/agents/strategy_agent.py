@@ -21,10 +21,15 @@ class StrategyAgent:
         if indicators is None:
             return
 
-        sma20, sma100, max_last_20, std_short, std_long = indicators
+        sma20, sma100, max_last_20, std_short, std_long, slope = indicators
 
         if not self.in_position:
-            if price > max_last_20 and sma20 > sma100 and std_short > std_long:
+            if (
+                price > max_last_20
+                and sma20 > sma100
+                and std_short > std_long
+                and slope > 0
+            ):
                 self.buy(price)
             return
 
@@ -42,18 +47,22 @@ class StrategyAgent:
         if price <= self.stop_loss or price <= trailing_stop:
             self.sell(price)
 
-    def _compute_trend_breakout_indicators(self) -> tuple[float, float, float, float, float] | None:
-        if len(self.price_history) < 100:
+    def _compute_trend_breakout_indicators(
+        self,
+    ) -> tuple[float, float, float, float, float, float] | None:
+        if len(self.price_history) < 110:
             return None
 
         last_20_prices = self.price_history[-20:]
         last_100_prices = self.price_history[-100:]
         sma20 = mean(last_20_prices)
         sma100 = mean(last_100_prices)
+        sma100_10_ticks_ago = mean(self.price_history[-110:-10])
+        slope = sma100 - sma100_10_ticks_ago
         max_last_20 = max(last_20_prices)
         std_short = pstdev(last_20_prices)
         std_long = pstdev(last_100_prices)
-        return sma20, sma100, max_last_20, std_short, std_long
+        return sma20, sma100, max_last_20, std_short, std_long, slope
 
     def buy(self, price: float):
         trade_usdt = self.config["trade_size_usdt"]
