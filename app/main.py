@@ -143,11 +143,14 @@ def run_single_backtest(
     market_generator_factory: Callable[[float], MarketGenerator],
     ticks: int = 1000,
     initial_price: float = 50000.0,
+    strategy_config=None,
 ) -> Dict[str, float]:
     wallet = PaperWallet()
-    RSIStrategyConfig = _load_rsi_strategy_config_class()
-    config = RSIStrategyConfig()
-    strategy = RSIMeanReversionStrategy(config=config)
+    if strategy_config is None:
+        RSIStrategyConfig = _load_rsi_strategy_config_class()
+        strategy_config = RSIStrategyConfig()
+
+    strategy = RSIMeanReversionStrategy(config=strategy_config)
 
     price = initial_price
     market_generator = market_generator_factory(initial_price)
@@ -324,4 +327,6 @@ def run(simulations: int = 100) -> None:
 
 
 if __name__ == "__main__":
-    run()
+    from app.optimization.grid_search import run_grid_search
+
+    run_grid_search()
