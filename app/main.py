@@ -304,16 +304,20 @@ def _run_market_monte_carlo(
     title: str,
     market_generator_factory: Callable[[float], MarketGenerator],
     simulations: int,
+    strategy_config=None,
 ) -> None:
     results: List[Dict[str, float]] = []
     for simulation_index in range(1, simulations + 1):
-        result = run_single_backtest(market_generator_factory=market_generator_factory)
+        result = run_single_backtest(
+            market_generator_factory=market_generator_factory,
+            strategy_config=strategy_config,
+        )
         results.append(result)
 
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
 
-def run(simulations: int = 100) -> None:
+def run(simulations: int = 100, strategy_config=None) -> None:
     scenarios = [
         ("TRENDING MARKET", _trending_market_generator),
         ("SIDEWAYS MARKET", _sideways_market_generator),
@@ -323,10 +327,22 @@ def run(simulations: int = 100) -> None:
     for index, (title, generator_factory) in enumerate(scenarios):
         if index > 0:
             print()
-        _run_market_monte_carlo(title=title, market_generator_factory=generator_factory, simulations=simulations)
+        _run_market_monte_carlo(
+            title=title,
+            market_generator_factory=generator_factory,
+            simulations=simulations,
+            strategy_config=strategy_config,
+        )
 
 
 if __name__ == "__main__":
-    from app.optimization.grid_search import run_grid_search
+    RSIStrategyConfig = _load_rsi_strategy_config_class()
+    fixed_config = RSIStrategyConfig(
+        rsi_oversold=25,
+        rsi_overbought=65,
+        atr_sl_multiplier=1.5,
+        atr_tp_multiplier=3.0,
+    )
+    _ = RSIMeanReversionStrategy(config=fixed_config)
 
-    run_grid_search()
+    run(simulations=100, strategy_config=fixed_config)
