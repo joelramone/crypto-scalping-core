@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.utils.logger import get_logger
+
 
 class MultiStrategyEngine:
     """Engine that routes signal generation to a strategy based on market regime."""
@@ -12,26 +14,24 @@ class MultiStrategyEngine:
         self.regime_detector = regime_detector
         self.rsi_strategy = rsi_strategy
         self.breakout_strategy = breakout_strategy
-        self._entry_log_printed = False
         self._last_signal_context: dict[str, str] | None = None
         self._trade_log: list[dict[str, str | float]] = []
+        self._logger = get_logger(__name__)
+        self._calls = 0
 
     def generate_signal(self, market_data):
-        if not self._entry_log_printed:
-            print("Entered MultiStrategyEngine.generate_signal()", flush=True)
-            self._entry_log_printed = True
+        self._calls += 1
         regime = self.regime_detector.detect(market_data)
-        print(f"Regime detected: {regime}", flush=True)
+
+        if self._calls == 1 or self._calls % 100 == 0:
+            self._logger.debug("Signal routing checkpoint call=%s regime=%s", self._calls, regime)
 
         if regime == self.SIDEWAYS:
-            print("Strategy allowed: RSI", flush=True)
             return self._delegate(self.rsi_strategy, regime, market_data)
 
         if regime == self.HIGH_VOLATILITY:
-            print("Strategy allowed: Breakout", flush=True)
             return self._delegate(self.breakout_strategy, regime, market_data)
 
-        print("Strategy allowed: None", flush=True)
         return None
 
     def consume_last_signal_context(self) -> dict[str, str] | None:
