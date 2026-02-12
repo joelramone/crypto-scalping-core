@@ -37,7 +37,7 @@ class StrategyAgent:
         if price > self.highest_price:
             self.highest_price = price
 
-        trailing_stop = self.highest_price * 0.996
+        trailing_stop = self.highest_price * 0.995
 
         if price <= self.stop_loss or price <= trailing_stop:
             self.sell(price)
@@ -58,7 +58,7 @@ class StrategyAgent:
         qty = trade_usdt / price
         self.wallet.buy("BTC/USDT", price, qty)
         self.entry_price = price
-        self.stop_loss = price * 0.997
+        self.stop_loss = price * 0.996
         self.highest_price = price
         self.in_position = True
 
