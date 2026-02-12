@@ -1,5 +1,5 @@
 import random
-from statistics import median, pstdev
+from statistics import mean, median, pstdev
 from typing import Callable, Dict, List
 
 from app.agents.strategy_agent import StrategyAgent
@@ -103,9 +103,12 @@ def run_single_backtest(
 
     price = initial_price
     market_generator = market_generator_factory(initial_price)
+    equity_curve: List[float] = []
+
     for _ in range(ticks):
         price = market_generator(price)
         strategy.on_price(price)
+        equity_curve.append(wallet.total_pnl({"BTC": price}))
 
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
@@ -118,6 +121,22 @@ def run_single_backtest(
     gross_profit = sum(pnl for pnl in trade_pnls if pnl > 0)
     gross_loss = sum(abs(pnl) for pnl in trade_pnls if pnl < 0)
     net_profit = sum(trade_pnls)
+    average_trade_pnl = mean(trade_pnls) if trade_pnls else 0.0
+    median_trade_pnl = median(trade_pnls) if trade_pnls else 0.0
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+    running_peak = float("-inf")
+    max_drawdown = 0.0
+    for equity in equity_curve:
+        running_peak = max(running_peak, equity)
+        drawdown = running_peak - equity
+        max_drawdown = max(max_drawdown, drawdown)
+
+    regime_active_ratio = (
+        strategy.regime_active_ticks / strategy.regime_evaluated_ticks
+        if strategy.regime_evaluated_ticks > 0
+        else 0.0
+    )
 
     return {
         "total_trades": total_trades,
@@ -126,6 +145,11 @@ def run_single_backtest(
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "net_profit": net_profit,
+        "average_trade_pnl": average_trade_pnl,
+        "median_trade_pnl": median_trade_pnl,
+        "profit_factor": profit_factor,
+        "max_drawdown": max_drawdown,
+        "regime_active_ratio": regime_active_ratio,
     }
 
 
@@ -157,6 +181,12 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     )
     average_trades_per_run = total_trades_all_runs / total_runs if total_runs else 0.0
     profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else 0.0
+    average_trade_pnl = mean(result["average_trade_pnl"] for result in results) if total_runs else 0.0
+    median_trade_pnl = median(result["median_trade_pnl"] for result in results) if total_runs else 0.0
+    average_max_drawdown = mean(result["max_drawdown"] for result in results) if total_runs else 0.0
+    average_regime_active_ratio = (
+        mean(result["regime_active_ratio"] for result in results) * 100 if total_runs else 0.0
+    )
     expectancy_per_trade = (
         total_net_profit / total_trades_all_runs if total_trades_all_runs > 0 else 0.0
     )
@@ -184,6 +214,10 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     print(f"Total losses: {total_losses_all_runs}")
     print(f"Profit factor: {profit_factor:.6f}")
     print(f"Expectancy per trade: {expectancy_per_trade:.6f}")
+    print(f"Avg trade PnL: {average_trade_pnl:.6f}")
+    print(f"Median trade PnL: {median_trade_pnl:.6f}")
+    print(f"Avg max drawdown: {average_max_drawdown:.6f}")
+    print(f"Avg HIGH_VOL_EXPANSION active ratio: {average_regime_active_ratio:.2f}%")
 
 
 def _run_market_monte_carlo(
