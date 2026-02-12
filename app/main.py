@@ -18,6 +18,7 @@ from app.utils.logger import configure_logging, get_logger
 TRADE_COMMISSION_RATE = 0.001
 BACKTEST_TICK_HARD_LIMIT = 2_000_000
 HEARTBEAT_SECONDS = 5.0
+DEBUG_METRICS = os.getenv("DEBUG_METRICS", "0") == "1"
 
 
 MarketGenerator = Callable[[float], float]
@@ -324,7 +325,7 @@ def run_single_backtest(
     net_profit = sum(trade_pnls)
     average_trade_pnl = mean(trade_pnls) if trade_pnls else 0.0
     median_trade_pnl = median(trade_pnls) if trade_pnls else 0.0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+    profit_factor = StrategyPerformanceTracker.compute_profit_factor({"gross_profit": gross_profit, "gross_loss": gross_loss})
 
     running_peak = float("-inf")
     max_drawdown = 0.0
@@ -385,6 +386,12 @@ def _aggregate_strategy_breakdown(results: List[Dict[str, Any]]) -> dict[str, di
     return aggregated
 
 
+def _format_profit_factor(value: float) -> str:
+    if value == float("inf"):
+        return "inf"
+    return f"{value:.6f}"
+
+
 def _print_strategy_breakdown(results: List[Dict[str, Any]]) -> None:
     aggregated = _aggregate_strategy_breakdown(results)
     if not aggregated:
@@ -400,8 +407,18 @@ def _print_strategy_breakdown(results: List[Dict[str, Any]]) -> None:
         print(f"{strategy_name}:")
         print(f"    Trades: {int(stats['trades_count'])}")
         print(f"    Win rate: {win_rate:.2f}%")
-        print(f"    Profit factor: {profit_factor:.6f}")
+        print(f"    Profit factor: {_format_profit_factor(profit_factor)}")
         print(f"    Expectancy: {expectancy:.6f}")
+
+        if DEBUG_METRICS:
+            print(
+                "    [DEBUG_METRICS] "
+                f"gross_profit={float(stats.get('gross_profit', 0.0)):.6f} "
+                f"gross_loss={float(stats.get('gross_loss', 0.0)):.6f} "
+                f"total_trades={int(stats.get('trades_count', 0))} "
+                f"total_wins={int(stats.get('wins', 0))} "
+                f"total_losses={int(stats.get('losses', 0))}"
+            )
 
 def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simulations: int) -> None:
     total_runs = len(results)
@@ -430,7 +447,7 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simula
         (total_wins_all_runs / total_trades_all_runs) * 100 if total_trades_all_runs > 0 else 0.0
     )
     average_trades_per_run = total_trades_all_runs / total_runs if total_runs else 0.0
-    profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else 0.0
+    profit_factor = StrategyPerformanceTracker.compute_profit_factor({"gross_profit": total_gross_profit, "gross_loss": total_gross_loss})
     average_trade_pnl = mean(result["average_trade_pnl"] for result in results) if total_runs else 0.0
     median_trade_pnl = median(result["median_trade_pnl"] for result in results) if total_runs else 0.0
     average_max_drawdown = mean(result["max_drawdown"] for result in results) if total_runs else 0.0
@@ -459,7 +476,7 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simula
     print(f"Total trades: {total_trades_all_runs}")
     print(f"Total wins: {total_wins_all_runs}")
     print(f"Total losses: {total_losses_all_runs}")
-    print(f"Profit factor: {profit_factor:.6f}")
+    print(f"Profit factor: {_format_profit_factor(profit_factor)}")
     print(f"Expectancy per trade: {expectancy_per_trade:.6f}")
     print(f"Avg trade PnL: {average_trade_pnl:.6f}")
     print(f"Median trade PnL: {median_trade_pnl:.6f}")
