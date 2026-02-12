@@ -37,9 +37,19 @@ def run_single_backtest(ticks: int = 1000, initial_price: float = 50000.0) -> Di
     wallet = PaperWallet()
     strategy = StrategyAgent(wallet=wallet)
 
+    bullish_ticks = 300
+    sideways_ticks = 300
+
     price = initial_price
-    for _ in range(ticks):
-        price *= 1 + random.uniform(-0.005, 0.005) + 0.0002
+    for tick in range(ticks):
+        if tick < bullish_ticks:
+            drift = 0.0005
+        elif tick < bullish_ticks + sideways_ticks:
+            drift = 0.0
+        else:
+            drift = -0.0005
+
+        price *= 1 + random.uniform(-0.005, 0.005) + drift
         strategy.on_price(price)
 
     btc_balance = wallet.get_balance("BTC")
