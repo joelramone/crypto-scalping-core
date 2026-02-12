@@ -1,6 +1,7 @@
 import random
 from statistics import mean, median, pstdev
 from typing import Callable, Dict, List
+import os
 
 from importlib import util as importlib_util
 from pathlib import Path
@@ -163,6 +164,7 @@ def run_single_backtest(
     ticks: int = 1000,
     initial_price: float = 50000.0,
 ) -> Dict[str, float]:
+    print("Entered Backtester.run()", flush=True)
     wallet = PaperWallet()
 
     price = initial_price
@@ -324,6 +326,7 @@ def _run_market_monte_carlo(
     simulations: int,
     strategy=None,
 ) -> None:
+    print(f"Entered MonteCarloRunner.run() - scenario={title}, simulations={simulations}", flush=True)
     results: List[Dict[str, float]] = []
     for simulation_index in range(1, simulations + 1):
         result = run_single_backtest(
@@ -335,7 +338,7 @@ def _run_market_monte_carlo(
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
 
-def run_simulation(strategy, simulations: int = 100) -> None:
+def run_simulation(strategy, simulations: int = 1) -> None:
     scenarios = [
         ("TRENDING", _trending_market_generator),
         ("SIDEWAYS", _sideways_market_generator),
@@ -354,6 +357,7 @@ def run_simulation(strategy, simulations: int = 100) -> None:
 
 
 if __name__ == "__main__":
+    print("Entered main()", flush=True)
     BreakoutStrategyConfig = _load_breakout_strategy_config_class()
     RSIStrategyConfig = _load_rsi_strategy_config_class()
 
@@ -378,6 +382,7 @@ if __name__ == "__main__":
         breakout_strategy=breakout_strategy,
     )
 
-    print("USING MULTI STRATEGY ENGINE")
+    simulations = int(os.getenv("MONTE_CARLO_SIMULATIONS", "1"))
+    print(f"USING MULTI STRATEGY ENGINE (simulations={simulations})", flush=True)
 
-    run_simulation(strategy=strategy_engine)
+    run_simulation(strategy=strategy_engine, simulations=simulations)
