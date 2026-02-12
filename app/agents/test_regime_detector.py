@@ -20,6 +20,7 @@ class RegimeDetectorTests(unittest.TestCase):
         self.assertIsNotNone(regime)
         assert regime is not None
         self.assertTrue(regime.high_vol_expansion)
+        self.assertFalse(regime.sideways)
         self.assertGreater(regime.std_short, regime.std_long)
         self.assertGreater(abs(regime.roc_20), regime.momentum_threshold)
 
