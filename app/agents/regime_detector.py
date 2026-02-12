@@ -8,6 +8,7 @@ from statistics import pstdev
 @dataclass(frozen=True)
 class RegimeState:
     high_vol_expansion: bool
+    sideways: bool
     std_short: float
     std_long: float
     roc_20: float
@@ -52,9 +53,11 @@ class RegimeDetector:
             and std_short > vol_threshold
             and abs(roc_20) > self.momentum_threshold
         )
+        sideways = not high_vol_expansion
 
         return RegimeState(
             high_vol_expansion=high_vol_expansion,
+            sideways=sideways,
             std_short=std_short,
             std_long=std_long,
             roc_20=roc_20,

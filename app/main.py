@@ -217,7 +217,7 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     print(f"Avg trade PnL: {average_trade_pnl:.6f}")
     print(f"Median trade PnL: {median_trade_pnl:.6f}")
     print(f"Avg max drawdown: {average_max_drawdown:.6f}")
-    print(f"Avg HIGH_VOL_EXPANSION active ratio: {average_regime_active_ratio:.2f}%")
+    print(f"Avg NON_SIDEWAYS active ratio: {average_regime_active_ratio:.2f}%")
 
 
 def _run_market_monte_carlo(

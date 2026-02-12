@@ -27,13 +27,13 @@ class StrategyAgent:
             return
 
         self.regime_evaluated_ticks += 1
-        if regime.high_vol_expansion:
+        if not regime.sideways:
             self.regime_active_ticks += 1
 
         sma20, sma100, max_last_20, std_short, std_long, slope = indicators
 
         if not self.in_position:
-            if not regime.high_vol_expansion:
+            if regime.sideways:
                 return
             if (
                 price > max_last_20
