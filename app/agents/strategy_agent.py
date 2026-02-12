@@ -17,6 +17,12 @@ class StrategyAgent:
         self.regime_detector = RegimeDetector()
         self.regime_active_ticks = 0
         self.regime_evaluated_ticks = 0
+        self.signal_evaluation_count = 0
+        self.price_above_max_last_20_true_count = 0
+        self.sma20_above_sma100_true_count = 0
+        self.std_short_above_std_long_true_count = 0
+        self.slope_positive_true_count = 0
+        self.all_signal_conditions_true_count = 0
 
     def on_price(self, price: float):
         self.price_history.append(price)
@@ -35,12 +41,32 @@ class StrategyAgent:
         if not self.in_position:
             if regime.sideways:
                 return
-            if (
-                price > max_last_20
-                and sma20 > sma100
-                and std_short > std_long
-                and slope > 0
-            ):
+
+            price_above_max_last_20 = price > max_last_20
+            sma20_above_sma100 = sma20 > sma100
+            std_short_above_std_long = std_short > std_long
+            slope_positive = slope > 0
+
+            self.signal_evaluation_count += 1
+            if price_above_max_last_20:
+                self.price_above_max_last_20_true_count += 1
+            if sma20_above_sma100:
+                self.sma20_above_sma100_true_count += 1
+            if std_short_above_std_long:
+                self.std_short_above_std_long_true_count += 1
+            if slope_positive:
+                self.slope_positive_true_count += 1
+
+            all_signal_conditions_true = (
+                price_above_max_last_20
+                and sma20_above_sma100
+                and std_short_above_std_long
+                and slope_positive
+            )
+            if all_signal_conditions_true:
+                self.all_signal_conditions_true_count += 1
+
+            if all_signal_conditions_true:
                 self.buy(price)
             return
 
@@ -91,3 +117,24 @@ class StrategyAgent:
         self.stop_loss = None
         self.highest_price = None
         self.in_position = False
+
+    def signal_diagnostics_percentages(self) -> dict[str, float]:
+        evaluations = self.signal_evaluation_count
+        if evaluations == 0:
+            return {
+                "signal_evaluations": 0.0,
+                "price_above_max_last_20_true_pct": 0.0,
+                "sma20_above_sma100_true_pct": 0.0,
+                "std_short_above_std_long_true_pct": 0.0,
+                "slope_positive_true_pct": 0.0,
+                "all_signal_conditions_true_pct": 0.0,
+            }
+
+        return {
+            "signal_evaluations": float(evaluations),
+            "price_above_max_last_20_true_pct": (self.price_above_max_last_20_true_count / evaluations) * 100,
+            "sma20_above_sma100_true_pct": (self.sma20_above_sma100_true_count / evaluations) * 100,
+            "std_short_above_std_long_true_pct": (self.std_short_above_std_long_true_count / evaluations) * 100,
+            "slope_positive_true_pct": (self.slope_positive_true_count / evaluations) * 100,
+            "all_signal_conditions_true_pct": (self.all_signal_conditions_true_count / evaluations) * 100,
+        }
