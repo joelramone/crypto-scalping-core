@@ -2,13 +2,59 @@ import random
 from statistics import mean, median, pstdev
 from typing import Callable, Dict, List
 
-from app.agents.strategy_agent import StrategyAgent
+from importlib import util as importlib_util
+from pathlib import Path
+
+from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
 
 TRADE_COMMISSION_RATE = 0.001
 
 
 MarketGenerator = Callable[[float], float]
+
+
+def _load_rsi_strategy_config_class():
+    config_path = Path(__file__).resolve().parent / "config" / "rsi_config.py"
+    spec = importlib_util.spec_from_file_location("app.config.rsi_config", config_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Unable to load RSIStrategyConfig")
+
+    module = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.RSIStrategyConfig
+
+
+def _compute_rsi(closes: List[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+
+    gains: List[float] = []
+    losses: List[float] = []
+    for i in range(len(closes) - period, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(abs(min(delta, 0.0)))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def _compute_atr(closes: List[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+
+    true_ranges = [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    if len(true_ranges) < period:
+        return None
+
+    return sum(true_ranges[-period:]) / period
 
 
 def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
@@ -99,15 +145,57 @@ def run_single_backtest(
     initial_price: float = 50000.0,
 ) -> Dict[str, float]:
     wallet = PaperWallet()
-    strategy = StrategyAgent(wallet=wallet)
+    RSIStrategyConfig = _load_rsi_strategy_config_class()
+    config = RSIStrategyConfig()
+    strategy = RSIMeanReversionStrategy(config=config)
 
     price = initial_price
     market_generator = market_generator_factory(initial_price)
     equity_curve: List[float] = []
+    close_history: List[float] = [price]
+
+    in_position = False
+    active_sl: float | None = None
+    active_tp: float | None = None
 
     for _ in range(ticks):
         price = market_generator(price)
-        strategy.on_price(price)
+        close_history.append(price)
+
+        rsi = _compute_rsi(close_history)
+        atr = _compute_atr(close_history)
+
+        if rsi is None or atr is None:
+            equity_curve.append(wallet.total_pnl({"BTC": price}))
+            continue
+
+        signal = strategy.generate_signal({"rsi": [rsi], "atr": [atr], "close": [price]})
+
+        if in_position:
+            if (active_sl is not None and price <= active_sl) or (active_tp is not None and price >= active_tp):
+                qty = wallet.get_balance("BTC")
+                if qty > 0:
+                    wallet.sell("BTC/USDT", price, qty)
+                in_position = False
+                active_sl = None
+                active_tp = None
+            elif signal and signal["side"] == "SHORT":
+                qty = wallet.get_balance("BTC")
+                if qty > 0:
+                    wallet.sell("BTC/USDT", price, qty)
+                in_position = False
+                active_sl = None
+                active_tp = None
+        else:
+            if signal and signal["side"] == "LONG":
+                trade_usdt = min(wallet.get_balance("USDT") * 0.95, 50.0)
+                if trade_usdt > 0:
+                    qty = trade_usdt / price
+                    wallet.buy("BTC/USDT", price, qty)
+                    in_position = True
+                    active_sl = float(signal["sl"])
+                    active_tp = float(signal["tp"])
+
         equity_curve.append(wallet.total_pnl({"BTC": price}))
 
     btc_balance = wallet.get_balance("BTC")
@@ -132,14 +220,6 @@ def run_single_backtest(
         drawdown = running_peak - equity
         max_drawdown = max(max_drawdown, drawdown)
 
-    regime_active_ratio = (
-        strategy.regime_active_ticks / strategy.regime_evaluated_ticks
-        if strategy.regime_evaluated_ticks > 0
-        else 0.0
-    )
-
-    signal_diagnostics = strategy.signal_diagnostics_percentages()
-
     return {
         "total_trades": total_trades,
         "total_wins": total_wins,
@@ -151,13 +231,6 @@ def run_single_backtest(
         "median_trade_pnl": median_trade_pnl,
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
-        "regime_active_ratio": regime_active_ratio,
-        "signal_evaluations": signal_diagnostics["signal_evaluations"],
-        "price_above_max_last_20_true_pct": signal_diagnostics["price_above_max_last_20_true_pct"],
-        "sma20_above_sma100_true_pct": signal_diagnostics["sma20_above_sma100_true_pct"],
-        "std_short_above_std_long_true_pct": signal_diagnostics["std_short_above_std_long_true_pct"],
-        "slope_positive_true_pct": signal_diagnostics["slope_positive_true_pct"],
-        "all_signal_conditions_true_pct": signal_diagnostics["all_signal_conditions_true_pct"],
     }
 
 
@@ -192,9 +265,6 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     average_trade_pnl = mean(result["average_trade_pnl"] for result in results) if total_runs else 0.0
     median_trade_pnl = median(result["median_trade_pnl"] for result in results) if total_runs else 0.0
     average_max_drawdown = mean(result["max_drawdown"] for result in results) if total_runs else 0.0
-    average_regime_active_ratio = (
-        mean(result["regime_active_ratio"] for result in results) * 100 if total_runs else 0.0
-    )
     expectancy_per_trade = (
         total_net_profit / total_trades_all_runs if total_trades_all_runs > 0 else 0.0
     )
@@ -225,7 +295,6 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     print(f"Avg trade PnL: {average_trade_pnl:.6f}")
     print(f"Median trade PnL: {median_trade_pnl:.6f}")
     print(f"Avg max drawdown: {average_max_drawdown:.6f}")
-    print(f"Avg NON_SIDEWAYS active ratio: {average_regime_active_ratio:.2f}%")
 
 
 def _run_market_monte_carlo(
@@ -237,13 +306,6 @@ def _run_market_monte_carlo(
     for simulation_index in range(1, simulations + 1):
         result = run_single_backtest(market_generator_factory=market_generator_factory)
         results.append(result)
-        print(f"\nSignal diagnostics ({title}) - simulation {simulation_index}/{simulations}")
-        print(f"- Signal evaluations: {int(result['signal_evaluations'])}")
-        print(f"- price > max_last_20 true: {result['price_above_max_last_20_true_pct']:.2f}%")
-        print(f"- sma20 > sma100 true: {result['sma20_above_sma100_true_pct']:.2f}%")
-        print(f"- std_short > std_long true: {result['std_short_above_std_long_true_pct']:.2f}%")
-        print(f"- slope > 0 true: {result['slope_positive_true_pct']:.2f}%")
-        print(f"- all conditions true: {result['all_signal_conditions_true_pct']:.2f}%")
 
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
