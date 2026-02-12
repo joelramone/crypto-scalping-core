@@ -5,7 +5,10 @@ from typing import Callable, Dict, List
 from importlib import util as importlib_util
 from pathlib import Path
 
+from app.agents.regime_detector import RegimeDetector
 from app.strategies.breakout_trend import BreakoutTrendStrategy
+from app.strategies.multi_strategy_engine import MultiStrategyEngine
+from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
 
 TRADE_COMMISSION_RATE = 0.001
@@ -25,6 +28,17 @@ def _load_breakout_strategy_config_class():
     return module.BreakoutStrategyConfig
 
 
+def _load_rsi_strategy_config_class():
+    config_path = Path(__file__).resolve().parent / "config" / "rsi_config.py"
+    spec = importlib_util.spec_from_file_location("app.config.rsi_config", config_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Unable to load RSIStrategyConfig")
+
+    module = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.RSIStrategyConfig
+
+
 def _compute_atr(closes: List[float], period: int = 14) -> float | None:
     if len(closes) <= period:
         return None
@@ -34,6 +48,31 @@ def _compute_atr(closes: List[float], period: int = 14) -> float | None:
         return None
 
     return sum(true_ranges[-period:]) / period
+
+
+def _compute_rsi(closes: List[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+
+    gains: List[float] = []
+    losses: List[float] = []
+    for index in range(len(closes) - period, len(closes)):
+        delta = closes[index] - closes[index - 1]
+        if delta >= 0:
+            gains.append(delta)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(delta))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
 
 def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
@@ -131,6 +170,7 @@ def run_single_backtest(
     equity_curve: List[float] = []
     close_history: List[float] = [price]
     atr_history: List[float] = []
+    rsi_history: List[float] = []
 
     in_position = False
     active_sl: float | None = None
@@ -141,14 +181,16 @@ def run_single_backtest(
         close_history.append(price)
 
         atr = _compute_atr(close_history)
+        rsi = _compute_rsi(close_history)
 
-        if atr is None:
+        if atr is None or rsi is None:
             equity_curve.append(wallet.total_pnl({"BTC": price}))
             continue
 
         atr_history.append(atr)
+        rsi_history.append(rsi)
 
-        signal = strategy.generate_signal({"atr": atr_history, "close": close_history})
+        signal = strategy.generate_signal({"atr": atr_history, "close": close_history, "rsi": rsi_history})
 
         if in_position:
             if (active_sl is not None and price <= active_sl) or (active_tp is not None and price >= active_tp):
@@ -313,13 +355,29 @@ def run_simulation(strategy, simulations: int = 100) -> None:
 
 if __name__ == "__main__":
     BreakoutStrategyConfig = _load_breakout_strategy_config_class()
-    config = BreakoutStrategyConfig(
+    RSIStrategyConfig = _load_rsi_strategy_config_class()
+
+    breakout_config = BreakoutStrategyConfig(
         lookback_period=20,
         atr_sl_multiplier=1.5,
         atr_tp_multiplier=3.0,
     )
-    strategy = BreakoutTrendStrategy(config=config)
+    rsi_config = RSIStrategyConfig(
+        rsi_oversold=30,
+        rsi_overbought=70,
+        atr_sl_multiplier=1.5,
+        atr_tp_multiplier=2.0,
+    )
 
-    print("USING BREAKOUT STRATEGY")
+    regime_detector = RegimeDetector()
+    rsi_strategy = RSIMeanReversionStrategy(config=rsi_config)
+    breakout_strategy = BreakoutTrendStrategy(config=breakout_config)
+    strategy_engine = MultiStrategyEngine(
+        regime_detector=regime_detector,
+        rsi_strategy=rsi_strategy,
+        breakout_strategy=breakout_strategy,
+    )
 
-    run_simulation(strategy=strategy)
+    print("USING MULTI STRATEGY ENGINE")
+
+    run_simulation(strategy=strategy_engine)
