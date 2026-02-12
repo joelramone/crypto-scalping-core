@@ -1,5 +1,6 @@
 from statistics import mean, pstdev
 
+from app.agents.regime_detector import RegimeDetector
 from app.config import MODE_500_USD
 from app.trading.paper_wallet import PaperWallet
 
@@ -13,17 +14,27 @@ class StrategyAgent:
         self.highest_price = None
         self.in_position = False
         self.price_history: list[float] = []
+        self.regime_detector = RegimeDetector()
+        self.regime_active_ticks = 0
+        self.regime_evaluated_ticks = 0
 
     def on_price(self, price: float):
-        indicators = self._compute_trend_breakout_indicators()
         self.price_history.append(price)
+        regime = self.regime_detector.evaluate(self.price_history)
+        indicators = self._compute_trend_breakout_indicators()
 
-        if indicators is None:
+        if indicators is None or regime is None:
             return
+
+        self.regime_evaluated_ticks += 1
+        if regime.high_vol_expansion:
+            self.regime_active_ticks += 1
 
         sma20, sma100, max_last_20, std_short, std_long, slope = indicators
 
         if not self.in_position:
+            if not regime.high_vol_expansion:
+                return
             if (
                 price > max_last_20
                 and sma20 > sma100
