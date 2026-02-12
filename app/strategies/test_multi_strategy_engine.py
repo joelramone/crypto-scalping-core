@@ -5,7 +5,7 @@ class StubRegimeDetector:
     def __init__(self, regime):
         self.regime = regime
 
-    def evaluate(self, _prices):
+    def detect(self, _market_data):
         return self.regime
 
 
@@ -19,17 +19,11 @@ class StubStrategy:
         return {"strategy": self.name}
 
 
-class RegimeStateStub:
-    def __init__(self, sideways=False, high_vol_expansion=False):
-        self.sideways = sideways
-        self.high_vol_expansion = high_vol_expansion
-
-
 def test_routes_to_rsi_strategy_in_sideways_regime():
     rsi = StubStrategy("rsi")
     breakout = StubStrategy("breakout")
     engine = MultiStrategyEngine(
-        regime_detector=StubRegimeDetector(RegimeStateStub(sideways=True)),
+        regime_detector=StubRegimeDetector(MultiStrategyEngine.SIDEWAYS),
         rsi_strategy=rsi,
         breakout_strategy=breakout,
     )
@@ -45,7 +39,7 @@ def test_routes_to_breakout_strategy_in_high_volatility_regime():
     rsi = StubStrategy("rsi")
     breakout = StubStrategy("breakout")
     engine = MultiStrategyEngine(
-        regime_detector=StubRegimeDetector(RegimeStateStub(high_vol_expansion=True)),
+        regime_detector=StubRegimeDetector(MultiStrategyEngine.HIGH_VOLATILITY),
         rsi_strategy=rsi,
         breakout_strategy=breakout,
     )
@@ -77,7 +71,7 @@ def test_exposes_signal_context_and_records_trade_outcome():
     rsi = StubStrategy("rsi")
     breakout = StubStrategy("breakout")
     engine = MultiStrategyEngine(
-        regime_detector=StubRegimeDetector(RegimeStateStub(sideways=True)),
+        regime_detector=StubRegimeDetector(MultiStrategyEngine.SIDEWAYS),
         rsi_strategy=rsi,
         breakout_strategy=breakout,
     )

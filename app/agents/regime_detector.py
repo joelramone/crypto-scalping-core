@@ -17,6 +17,10 @@ class RegimeState:
 
 
 class RegimeDetector:
+    SIDEWAYS = "SIDEWAYS"
+    HIGH_VOLATILITY = "HIGH_VOLATILITY"
+    TRENDING = "TRENDING"
+
     def __init__(
         self,
         short_window: int = 20,
@@ -64,6 +68,20 @@ class RegimeDetector:
             vol_threshold=vol_threshold,
             momentum_threshold=self.momentum_threshold,
         )
+
+    def detect(self, market_data: dict[str, list[float]]) -> str | None:
+        close_prices = market_data.get("close", [])
+        regime_state = self.evaluate(close_prices)
+        if regime_state is None:
+            return None
+
+        if regime_state.high_vol_expansion:
+            return self.HIGH_VOLATILITY
+
+        if abs(regime_state.roc_20) <= regime_state.momentum_threshold:
+            return self.SIDEWAYS
+
+        return self.TRENDING
 
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:
