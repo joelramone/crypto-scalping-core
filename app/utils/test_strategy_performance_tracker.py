@@ -40,3 +40,13 @@ def test_tracker_computed_metrics_helpers():
     assert StrategyPerformanceTracker.compute_win_rate(stats) == 50.0
     assert StrategyPerformanceTracker.compute_profit_factor(stats) == 4.0
     assert StrategyPerformanceTracker.compute_expectancy(stats) == 3.0
+
+
+def test_profit_factor_handles_zero_loss_and_zero_profit_edge_cases():
+    only_wins = {"gross_profit": 12.0, "gross_loss": 0.0}
+    only_losses = {"gross_profit": 0.0, "gross_loss": 3.0}
+    no_activity = {"gross_profit": 0.0, "gross_loss": 0.0}
+
+    assert StrategyPerformanceTracker.compute_profit_factor(only_wins) == float("inf")
+    assert StrategyPerformanceTracker.compute_profit_factor(only_losses) == 0.0
+    assert StrategyPerformanceTracker.compute_profit_factor(no_activity) == 0.0

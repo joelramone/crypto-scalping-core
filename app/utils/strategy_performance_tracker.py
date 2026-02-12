@@ -51,10 +51,19 @@ class StrategyPerformanceTracker:
 
     @staticmethod
     def compute_profit_factor(stats: dict[str, float]) -> float:
+        gross_profit = float(stats.get("gross_profit", 0.0))
         gross_loss = float(stats.get("gross_loss", 0.0))
-        if gross_loss == 0:
+
+        normalized_gross_loss = abs(gross_loss)
+        if normalized_gross_loss == 0.0:
+            if gross_profit > 0.0:
+                return float("inf")
             return 0.0
-        return float(stats.get("gross_profit", 0.0)) / gross_loss
+
+        if gross_profit <= 0.0:
+            return 0.0
+
+        return gross_profit / normalized_gross_loss
 
     @staticmethod
     def compute_expectancy(stats: dict[str, float]) -> float:
