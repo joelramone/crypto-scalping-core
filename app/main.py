@@ -4,6 +4,8 @@ from typing import Dict, List
 from app.agents.strategy_agent import StrategyAgent
 from app.trading.paper_wallet import PaperWallet, Trade
 
+TRADE_COMMISSION_RATE = 0.001
+
 
 def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
     pnls: List[float] = []
@@ -23,10 +25,8 @@ def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
             buy_price = float(getattr(pending_buy, "price", 0.0) or 0.0)
             sell_price = float(getattr(trade, "price", 0.0) or 0.0)
             quantity = float(getattr(pending_buy, "quantity", 0.0) or 0.0)
-            buy_fee = float(getattr(pending_buy, "fee", 0.0) or 0.0)
-            sell_fee = float(getattr(trade, "fee", 0.0) or 0.0)
-
-            pnl = (sell_price - buy_price) * quantity - buy_fee - sell_fee
+            gross_profit = (sell_price - buy_price) * quantity
+            pnl = gross_profit - (buy_price * TRADE_COMMISSION_RATE)
             pnls.append(pnl)
             pending_buy = None
 
