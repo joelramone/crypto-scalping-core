@@ -36,6 +36,9 @@ class RegimeDetector:
         self.vol_percentile = vol_percentile
         self.std_history: list[float] = []
 
+    def reset_state(self) -> None:
+        self.std_history.clear()
+
     def evaluate(self, price_history: list[float]) -> RegimeState | None:
         minimum_history = max(self.long_window, self.momentum_window + 1)
         if len(price_history) < minimum_history:

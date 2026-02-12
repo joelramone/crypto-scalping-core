@@ -1,3 +1,4 @@
+import csv
 import random
 from statistics import mean, median, pstdev
 from typing import Any, Callable, Dict, List
@@ -420,7 +421,22 @@ def _print_strategy_breakdown(results: List[Dict[str, Any]]) -> None:
                 f"total_losses={int(stats.get('losses', 0))}"
             )
 
-def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simulations: int) -> None:
+def _compute_percentile(values: List[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+
+    rank = (len(ordered) - 1) * percentile
+    lower_index = int(rank)
+    upper_index = min(lower_index + 1, len(ordered) - 1)
+    weight = rank - lower_index
+    return ordered[lower_index] + (ordered[upper_index] - ordered[lower_index]) * weight
+
+
+def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) -> Dict[str, float]:
     total_runs = len(results)
     net_profits = [result["net_profit"] for result in results]
     total_net_profit = sum(net_profits)
@@ -447,41 +463,97 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simula
         (total_wins_all_runs / total_trades_all_runs) * 100 if total_trades_all_runs > 0 else 0.0
     )
     average_trades_per_run = total_trades_all_runs / total_runs if total_runs else 0.0
-    profit_factor = StrategyPerformanceTracker.compute_profit_factor({"gross_profit": total_gross_profit, "gross_loss": total_gross_loss})
+    average_profit_factor = mean(
+        StrategyPerformanceTracker.compute_profit_factor(result) for result in results
+    ) if total_runs else 0.0
+    aggregate_profit_factor = StrategyPerformanceTracker.compute_profit_factor(
+        {"gross_profit": total_gross_profit, "gross_loss": total_gross_loss}
+    )
     average_trade_pnl = mean(result["average_trade_pnl"] for result in results) if total_runs else 0.0
     median_trade_pnl = median(result["median_trade_pnl"] for result in results) if total_runs else 0.0
     average_max_drawdown = mean(result["max_drawdown"] for result in results) if total_runs else 0.0
+    average_expectancy = mean(
+        StrategyPerformanceTracker.compute_expectancy(result) for result in results
+    ) if total_runs else 0.0
     expectancy_per_trade = (
         total_net_profit / total_trades_all_runs if total_trades_all_runs > 0 else 0.0
     )
     net_profit_std = pstdev(net_profits) if len(net_profits) > 1 else 0.0
     median_net_profit = median(net_profits) if net_profits else 0.0
+    percentile_5_net_profit = _compute_percentile(net_profits, 0.05)
+    percentile_95_net_profit = _compute_percentile(net_profits, 0.95)
     best_run = max(net_profits) if net_profits else 0.0
     worst_run = min(net_profits) if net_profits else 0.0
     profitable_runs = sum(1 for value in net_profits if value > 0)
+    profitable_run_pct = ((profitable_runs / total_runs) * 100) if total_runs else 0.0
+    sharpe_approx = (average_net_profit / net_profit_std) if net_profit_std > 0 else 0.0
+    coefficient_of_variation = (net_profit_std / average_net_profit) if average_net_profit != 0 else 0.0
+
+    return {
+        "simulations": simulations,
+        "total_runs": total_runs,
+        "avg_net_profit": average_net_profit,
+        "median_net_profit": median_net_profit,
+        "net_profit_std_dev": net_profit_std,
+        "p5_net_profit": percentile_5_net_profit,
+        "p95_net_profit": percentile_95_net_profit,
+        "best_run_net_profit": best_run,
+        "worst_run_net_profit": worst_run,
+        "profitable_runs": profitable_runs,
+        "profitable_run_pct": profitable_run_pct,
+        "avg_gross_profit": average_gross_profit,
+        "avg_gross_loss": average_gross_loss,
+        "avg_win_rate": average_win_rate,
+        "weighted_win_rate": weighted_win_rate,
+        "avg_trades_per_run": average_trades_per_run,
+        "total_trades": total_trades_all_runs,
+        "total_wins": total_wins_all_runs,
+        "total_losses": total_losses_all_runs,
+        "avg_profit_factor": average_profit_factor,
+        "aggregate_profit_factor": aggregate_profit_factor,
+        "avg_expectancy": average_expectancy,
+        "expectancy_per_trade": expectancy_per_trade,
+        "avg_trade_pnl": average_trade_pnl,
+        "median_trade_pnl": median_trade_pnl,
+        "avg_max_drawdown": average_max_drawdown,
+        "sharpe_ratio_approx": sharpe_approx,
+        "coefficient_of_variation": coefficient_of_variation,
+    }
+
+
+def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simulations: int) -> Dict[str, float]:
+    summary = _build_monte_carlo_summary(results=results, simulations=simulations)
 
     print(f"--- {title} ---")
     print(f"Simulations: {simulations}")
-    print(f"Avg net profit: {average_net_profit:.6f}")
-    print(f"Median net profit: {median_net_profit:.6f}")
-    print(f"Net profit std dev: {net_profit_std:.6f}")
-    print(f"Best run net profit: {best_run:.6f}")
-    print(f"Worst run net profit: {worst_run:.6f}")
-    print(f"Profitable runs: {profitable_runs}/{total_runs}")
-    print(f"Avg gross profit: {average_gross_profit:.6f}")
-    print(f"Avg gross loss: {average_gross_loss:.6f}")
-    print(f"Avg win rate: {average_win_rate:.2f}%")
-    print(f"Weighted win rate: {weighted_win_rate:.2f}%")
-    print(f"Avg trades per run: {average_trades_per_run:.2f}")
-    print(f"Total trades: {total_trades_all_runs}")
-    print(f"Total wins: {total_wins_all_runs}")
-    print(f"Total losses: {total_losses_all_runs}")
-    print(f"Profit factor: {_format_profit_factor(profit_factor)}")
-    print(f"Expectancy per trade: {expectancy_per_trade:.6f}")
-    print(f"Avg trade PnL: {average_trade_pnl:.6f}")
-    print(f"Median trade PnL: {median_trade_pnl:.6f}")
-    print(f"Avg max drawdown: {average_max_drawdown:.6f}")
+    print(f"Avg net profit: {summary['avg_net_profit']:.6f}")
+    print(f"Median net profit: {summary['median_net_profit']:.6f}")
+    print(f"Net profit std dev: {summary['net_profit_std_dev']:.6f}")
+    print(f"5th percentile net profit: {summary['p5_net_profit']:.6f}")
+    print(f"95th percentile net profit: {summary['p95_net_profit']:.6f}")
+    print(f"Best run net profit: {summary['best_run_net_profit']:.6f}")
+    print(f"Worst run net profit: {summary['worst_run_net_profit']:.6f}")
+    print(f"Profitable runs: {int(summary['profitable_runs'])}/{int(summary['total_runs'])}")
+    print(f"% runs rentables: {summary['profitable_run_pct']:.2f}%")
+    print(f"Avg gross profit: {summary['avg_gross_profit']:.6f}")
+    print(f"Avg gross loss: {summary['avg_gross_loss']:.6f}")
+    print(f"Avg win rate: {summary['avg_win_rate']:.2f}%")
+    print(f"Weighted win rate: {summary['weighted_win_rate']:.2f}%")
+    print(f"Avg trades per run: {summary['avg_trades_per_run']:.2f}")
+    print(f"Total trades: {int(summary['total_trades'])}")
+    print(f"Total wins: {int(summary['total_wins'])}")
+    print(f"Total losses: {int(summary['total_losses'])}")
+    print(f"Avg profit factor: {_format_profit_factor(summary['avg_profit_factor'])}")
+    print(f"Aggregate profit factor: {_format_profit_factor(summary['aggregate_profit_factor'])}")
+    print(f"Avg expectancy: {summary['avg_expectancy']:.6f}")
+    print(f"Expectancy per trade: {summary['expectancy_per_trade']:.6f}")
+    print(f"Avg trade PnL: {summary['avg_trade_pnl']:.6f}")
+    print(f"Median trade PnL: {summary['median_trade_pnl']:.6f}")
+    print(f"Max drawdown promedio: {summary['avg_max_drawdown']:.6f}")
+    print(f"Sharpe ratio aprox: {summary['sharpe_ratio_approx']:.6f}")
+    print(f"Coefficient of variation: {summary['coefficient_of_variation']:.6f}")
     _print_strategy_breakdown(results)
+    return summary
 
 
 def _run_market_monte_carlo(
@@ -489,41 +561,106 @@ def _run_market_monte_carlo(
     market_generator_factory: Callable[[float], MarketGenerator],
     simulations: int,
     strategy=None,
-) -> None:
+) -> Dict[str, float]:
     logger = get_logger(__name__)
     run_start = time.time()
     logger.info("Scenario started scenario=%s simulations=%s", title, simulations)
     print(f"Scenario {title}: starting {simulations} simulations", flush=True)
     results: List[Dict[str, Any]] = []
     for simulation_index in range(1, simulations + 1):
+        simulation_started = time.time()
         logger.info("Evaluating combination %s/%s scenario=%s strategy=%s", simulation_index, simulations, title, getattr(strategy, "__class__", type(strategy)).__name__)
-        print(f"Evaluating combination {simulation_index}/{simulations} ({title})", flush=True)
+
+        if hasattr(strategy, "regime_detector") and hasattr(strategy.regime_detector, "reset_state"):
+            strategy.regime_detector.reset_state()
+
         result = run_single_backtest(
             market_generator_factory=market_generator_factory,
             strategy=strategy,
         )
         results.append(result)
 
-    logger.info("Scenario finished scenario=%s elapsed=%.2fs", title, time.time() - run_start)
-    _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
+        elapsed = time.time() - run_start
+        average_duration = elapsed / simulation_index
+        eta_seconds = average_duration * (simulations - simulation_index)
+        print(
+            f"Simulation {simulation_index}/{simulations} | "
+            f"Elapsed: {elapsed:.2f}s | "
+            f"ETA: {eta_seconds:.2f}s | "
+            f"Last sim: {time.time() - simulation_started:.2f}s",
+            flush=True,
+        )
+
+    total_elapsed = time.time() - run_start
+    logger.info("Scenario finished scenario=%s elapsed=%.2fs", title, total_elapsed)
+    summary = _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
+    summary["elapsed_seconds"] = total_elapsed
+    return summary
 
 
-def run_simulation(strategy, simulations: int = 1) -> None:
+def _save_research_csv(results: Dict[str, Dict[str, float]], output_path: str = "research_results_300sims.csv") -> None:
+    if not results:
+        return
+
+    fieldnames = ["regime"]
+    first_regime = next(iter(results.values()))
+    fieldnames.extend(first_regime.keys())
+
+    with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for regime, metrics in results.items():
+            row = {"regime": regime}
+            row.update(metrics)
+            writer.writerow(row)
+
+    print(f"Saved research CSV: {output_path}", flush=True)
+
+
+def _print_research_summary(results: Dict[str, Dict[str, float]]) -> None:
+    if not results:
+        return
+
+    print("\n=== RESEARCH SUMMARY ===")
+
+    by_avg_net = max(results.items(), key=lambda item: item[1].get("avg_net_profit", float("-inf")))
+    print(f"Regime con edge (mayor avg net profit): {by_avg_net[0]} ({by_avg_net[1]['avg_net_profit']:.6f})")
+
+    pf_gt_1 = [regime for regime, metrics in results.items() if metrics.get("avg_profit_factor", 0.0) > 1.0]
+    expectancy_gt_0 = [regime for regime, metrics in results.items() if metrics.get("avg_expectancy", 0.0) > 0.0]
+    excessive_dd = [
+        regime
+        for regime, metrics in results.items()
+        if metrics.get("avg_max_drawdown", 0.0) > abs(metrics.get("avg_net_profit", 0.0))
+    ]
+
+    print(f"Regímenes con PF > 1: {', '.join(pf_gt_1) if pf_gt_1 else 'Ninguno'}")
+    print(f"Regímenes con expectancy > 0: {', '.join(expectancy_gt_0) if expectancy_gt_0 else 'Ninguno'}")
+    print(f"Regímenes con drawdown excesivo: {', '.join(excessive_dd) if excessive_dd else 'Ninguno'}")
+
+
+def run_simulation(strategy, simulations: int = 300) -> Dict[str, Dict[str, float]]:
     scenarios = [
         ("TRENDING", _trending_market_generator),
         ("SIDEWAYS", _sideways_market_generator),
-        ("HIGH VOLATILITY", _high_volatility_market_generator),
+        ("HIGH_VOL", _high_volatility_market_generator),
     ]
 
+    research_results: Dict[str, Dict[str, float]] = {}
     for index, (title, generator_factory) in enumerate(scenarios):
         if index > 0:
             print()
-        _run_market_monte_carlo(
+        summary = _run_market_monte_carlo(
             title=title,
             market_generator_factory=generator_factory,
             simulations=simulations,
             strategy=strategy,
         )
+        research_results[title] = summary
+
+    _save_research_csv(research_results)
+    _print_research_summary(research_results)
+    return research_results
 
 
 if __name__ == "__main__":
@@ -555,10 +692,11 @@ if __name__ == "__main__":
         breakout_strategy=breakout_strategy,
     )
 
-    simulations = int(os.getenv("MONTE_CARLO_SIMULATIONS", "1"))
+    simulations = int(os.getenv("MONTE_CARLO_SIMULATIONS", "300"))
     logger.info("Using multi strategy engine simulations=%s", simulations)
     print(f"USING MULTI STRATEGY ENGINE (simulations={simulations})", flush=True)
 
-    run_simulation(strategy=strategy_engine, simulations=simulations)
+    results = run_simulation(strategy=strategy_engine, simulations=simulations)
+    logger.info("Research regimes evaluated=%s", list(results.keys()))
     logger.info("Total execution time: %.2fs", time.time() - start_time)
     print(f"Total execution time: {time.time() - start_time:.2f}s", flush=True)
