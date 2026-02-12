@@ -1,4 +1,4 @@
-from statistics import mean
+from statistics import mean, pstdev
 
 from app.config import MODE_500_USD
 from app.trading.paper_wallet import PaperWallet
@@ -21,10 +21,10 @@ class StrategyAgent:
         if indicators is None:
             return
 
-        sma20, sma100, max_last_20 = indicators
+        sma20, sma100, max_last_20, std_short, std_long = indicators
 
         if not self.in_position:
-            if price > max_last_20 and sma20 > sma100:
+            if price > max_last_20 and sma20 > sma100 and std_short > std_long:
                 self.buy(price)
             return
 
@@ -42,7 +42,7 @@ class StrategyAgent:
         if price <= self.stop_loss or price <= trailing_stop:
             self.sell(price)
 
-    def _compute_trend_breakout_indicators(self) -> tuple[float, float, float] | None:
+    def _compute_trend_breakout_indicators(self) -> tuple[float, float, float, float, float] | None:
         if len(self.price_history) < 100:
             return None
 
@@ -51,7 +51,9 @@ class StrategyAgent:
         sma20 = mean(last_20_prices)
         sma100 = mean(last_100_prices)
         max_last_20 = max(last_20_prices)
-        return sma20, sma100, max_last_20
+        std_short = pstdev(last_20_prices)
+        std_long = pstdev(last_100_prices)
+        return sma20, sma100, max_last_20, std_short, std_long
 
     def buy(self, price: float):
         trade_usdt = self.config["trade_size_usdt"]
