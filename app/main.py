@@ -5,7 +5,7 @@ from typing import Callable, Dict, List
 from importlib import util as importlib_util
 from pathlib import Path
 
-from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
+from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
 
 TRADE_COMMISSION_RATE = 0.001
@@ -14,36 +14,15 @@ TRADE_COMMISSION_RATE = 0.001
 MarketGenerator = Callable[[float], float]
 
 
-def _load_rsi_strategy_config_class():
-    config_path = Path(__file__).resolve().parent / "config" / "rsi_config.py"
-    spec = importlib_util.spec_from_file_location("app.config.rsi_config", config_path)
+def _load_breakout_strategy_config_class():
+    config_path = Path(__file__).resolve().parent / "config" / "breakout_config.py"
+    spec = importlib_util.spec_from_file_location("app.config.breakout_config", config_path)
     if spec is None or spec.loader is None:
-        raise ImportError("Unable to load RSIStrategyConfig")
+        raise ImportError("Unable to load BreakoutStrategyConfig")
 
     module = importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.RSIStrategyConfig
-
-
-def _compute_rsi(closes: List[float], period: int = 14) -> float | None:
-    if len(closes) <= period:
-        return None
-
-    gains: List[float] = []
-    losses: List[float] = []
-    for i in range(len(closes) - period, len(closes)):
-        delta = closes[i] - closes[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(abs(min(delta, 0.0)))
-
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return module.BreakoutStrategyConfig
 
 
 def _compute_atr(closes: List[float], period: int = 14) -> float | None:
@@ -141,21 +120,17 @@ def _high_volatility_market_generator(initial_price: float) -> MarketGenerator:
 
 def run_single_backtest(
     market_generator_factory: Callable[[float], MarketGenerator],
+    strategy,
     ticks: int = 1000,
     initial_price: float = 50000.0,
-    strategy_config=None,
 ) -> Dict[str, float]:
     wallet = PaperWallet()
-    if strategy_config is None:
-        RSIStrategyConfig = _load_rsi_strategy_config_class()
-        strategy_config = RSIStrategyConfig()
-
-    strategy = RSIMeanReversionStrategy(config=strategy_config)
 
     price = initial_price
     market_generator = market_generator_factory(initial_price)
     equity_curve: List[float] = []
     close_history: List[float] = [price]
+    atr_history: List[float] = []
 
     in_position = False
     active_sl: float | None = None
@@ -165,14 +140,15 @@ def run_single_backtest(
         price = market_generator(price)
         close_history.append(price)
 
-        rsi = _compute_rsi(close_history)
         atr = _compute_atr(close_history)
 
-        if rsi is None or atr is None:
+        if atr is None:
             equity_curve.append(wallet.total_pnl({"BTC": price}))
             continue
 
-        signal = strategy.generate_signal({"rsi": [rsi], "atr": [atr], "close": [price]})
+        atr_history.append(atr)
+
+        signal = strategy.generate_signal({"atr": atr_history, "close": close_history})
 
         if in_position:
             if (active_sl is not None and price <= active_sl) or (active_tp is not None and price >= active_tp):
@@ -304,24 +280,24 @@ def _run_market_monte_carlo(
     title: str,
     market_generator_factory: Callable[[float], MarketGenerator],
     simulations: int,
-    strategy_config=None,
+    strategy=None,
 ) -> None:
     results: List[Dict[str, float]] = []
     for simulation_index in range(1, simulations + 1):
         result = run_single_backtest(
             market_generator_factory=market_generator_factory,
-            strategy_config=strategy_config,
+            strategy=strategy,
         )
         results.append(result)
 
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
 
-def run(simulations: int = 100, strategy_config=None) -> None:
+def run_simulation(strategy, simulations: int = 100) -> None:
     scenarios = [
-        ("TRENDING MARKET", _trending_market_generator),
-        ("SIDEWAYS MARKET", _sideways_market_generator),
-        ("HIGH VOLATILITY MARKET", _high_volatility_market_generator),
+        ("TRENDING", _trending_market_generator),
+        ("SIDEWAYS", _sideways_market_generator),
+        ("HIGH VOLATILITY", _high_volatility_market_generator),
     ]
 
     for index, (title, generator_factory) in enumerate(scenarios):
@@ -331,18 +307,19 @@ def run(simulations: int = 100, strategy_config=None) -> None:
             title=title,
             market_generator_factory=generator_factory,
             simulations=simulations,
-            strategy_config=strategy_config,
+            strategy=strategy,
         )
 
 
 if __name__ == "__main__":
-    RSIStrategyConfig = _load_rsi_strategy_config_class()
-    fixed_config = RSIStrategyConfig(
-        rsi_oversold=25,
-        rsi_overbought=65,
+    BreakoutStrategyConfig = _load_breakout_strategy_config_class()
+    config = BreakoutStrategyConfig(
+        lookback_period=20,
         atr_sl_multiplier=1.5,
         atr_tp_multiplier=3.0,
     )
-    _ = RSIMeanReversionStrategy(config=fixed_config)
+    strategy = BreakoutTrendStrategy(config=config)
 
-    run(simulations=100, strategy_config=fixed_config)
+    print("USING BREAKOUT STRATEGY")
+
+    run_simulation(strategy=strategy)
