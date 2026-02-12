@@ -1,6 +1,6 @@
 import random
 from statistics import mean, median, pstdev
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 import os
 
 from importlib import util as importlib_util
@@ -11,6 +11,7 @@ from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.multi_strategy_engine import MultiStrategyEngine
 from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
+from app.utils.strategy_performance_tracker import StrategyPerformanceTracker
 
 TRADE_COMMISSION_RATE = 0.001
 
@@ -91,22 +92,42 @@ def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
             if getattr(pending_buy, "symbol", None) != getattr(trade, "symbol", None):
                 continue
 
-            buy_price = float(getattr(pending_buy, "price", 0.0) or 0.0)
-            sell_price = float(getattr(trade, "price", 0.0) or 0.0)
-            quantity = float(getattr(pending_buy, "quantity", 0.0) or 0.0)
-            gross_profit = (sell_price - buy_price) * quantity
-
-            buy_fee = float(
-                getattr(pending_buy, "fee", buy_price * quantity * TRADE_COMMISSION_RATE) or 0.0
-            )
-            sell_fee = float(
-                getattr(trade, "fee", sell_price * quantity * TRADE_COMMISSION_RATE) or 0.0
-            )
-            pnl = gross_profit - (buy_fee + sell_fee)
+            pnl = _trade_pnl_from_pair(pending_buy, trade)
             pnls.append(pnl)
             pending_buy = None
 
     return pnls
+
+def _trade_pnl_from_pair(buy_trade: Trade, sell_trade: Trade) -> float:
+    buy_price = float(getattr(buy_trade, "price", 0.0) or 0.0)
+    sell_price = float(getattr(sell_trade, "price", 0.0) or 0.0)
+    quantity = float(getattr(buy_trade, "quantity", 0.0) or 0.0)
+    gross_profit = (sell_price - buy_price) * quantity
+
+    buy_fee = float(
+        getattr(buy_trade, "fee", buy_price * quantity * TRADE_COMMISSION_RATE) or 0.0
+    )
+    sell_fee = float(
+        getattr(sell_trade, "fee", sell_price * quantity * TRADE_COMMISSION_RATE) or 0.0
+    )
+    return gross_profit - (buy_fee + sell_fee)
+
+
+def _resolve_signal_context(strategy: Any) -> dict[str, str] | None:
+    consume_context = getattr(strategy, "consume_last_signal_context", None)
+    if callable(consume_context):
+        context = consume_context()
+        if isinstance(context, dict):
+            return context
+    return None
+
+
+def _record_trade_outcome(strategy: Any, trade_result: str, pnl: float, context: dict[str, str] | None) -> None:
+    record_outcome = getattr(strategy, "record_trade_outcome", None)
+    if callable(record_outcome):
+        record_outcome(trade_result=trade_result, pnl=pnl, context=context)
+
+
 
 
 def _trending_market_generator(initial_price: float) -> MarketGenerator:
@@ -166,6 +187,7 @@ def run_single_backtest(
 ) -> Dict[str, float]:
     print("Entered Backtester.run()", flush=True)
     wallet = PaperWallet()
+    strategy_performance_tracker = StrategyPerformanceTracker()
 
     price = initial_price
     market_generator = market_generator_factory(initial_price)
@@ -177,6 +199,8 @@ def run_single_backtest(
     in_position = False
     active_sl: float | None = None
     active_tp: float | None = None
+    active_trade_context: dict[str, str] | None = None
+    active_buy_trade: Trade | None = None
 
     for _ in range(ticks):
         price = market_generator(price)
@@ -195,20 +219,36 @@ def run_single_backtest(
         signal = strategy.generate_signal({"atr": atr_history, "close": close_history, "rsi": rsi_history})
 
         if in_position:
+            should_close_position = False
             if (active_sl is not None and price <= active_sl) or (active_tp is not None and price >= active_tp):
-                qty = wallet.get_balance("BTC")
-                if qty > 0:
-                    wallet.sell("BTC/USDT", price, qty)
-                in_position = False
-                active_sl = None
-                active_tp = None
+                should_close_position = True
             elif signal and signal["side"] == "SHORT":
+                should_close_position = True
+
+            if should_close_position:
                 qty = wallet.get_balance("BTC")
                 if qty > 0:
                     wallet.sell("BTC/USDT", price, qty)
+                    sell_trade = wallet.trades[-1]
+                    if active_buy_trade is not None:
+                        trade_pnl = _trade_pnl_from_pair(active_buy_trade, sell_trade)
+                        trade_result = "WIN" if trade_pnl > 0 else "LOSS" if trade_pnl < 0 else "BREAKEVEN"
+                        if active_trade_context is not None:
+                            strategy_performance_tracker.record_trade(
+                                strategy_name=active_trade_context.get("strategy_name", "unknown"),
+                                pnl=trade_pnl,
+                            )
+                        _record_trade_outcome(
+                            strategy=strategy,
+                            trade_result=trade_result,
+                            pnl=trade_pnl,
+                            context=active_trade_context,
+                        )
                 in_position = False
                 active_sl = None
                 active_tp = None
+                active_trade_context = None
+                active_buy_trade = None
         else:
             if signal and signal["side"] == "LONG":
                 trade_usdt = min(wallet.get_balance("USDT") * 0.95, 50.0)
@@ -218,12 +258,29 @@ def run_single_backtest(
                     in_position = True
                     active_sl = float(signal["sl"])
                     active_tp = float(signal["tp"])
+                    active_trade_context = _resolve_signal_context(strategy)
+                    active_buy_trade = wallet.trades[-1]
 
         equity_curve.append(wallet.total_pnl({"BTC": price}))
 
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
         wallet.sell("BTC/USDT", price, btc_balance)
+        sell_trade = wallet.trades[-1]
+        if active_buy_trade is not None:
+            trade_pnl = _trade_pnl_from_pair(active_buy_trade, sell_trade)
+            trade_result = "WIN" if trade_pnl > 0 else "LOSS" if trade_pnl < 0 else "BREAKEVEN"
+            if active_trade_context is not None:
+                strategy_performance_tracker.record_trade(
+                    strategy_name=active_trade_context.get("strategy_name", "unknown"),
+                    pnl=trade_pnl,
+                )
+            _record_trade_outcome(
+                strategy=strategy,
+                trade_result=trade_result,
+                pnl=trade_pnl,
+                context=active_trade_context,
+            )
 
     trade_pnls = _closed_trade_pnls(wallet.trades)
     total_trades = len(trade_pnls)
@@ -254,10 +311,64 @@ def run_single_backtest(
         "median_trade_pnl": median_trade_pnl,
         "profit_factor": profit_factor,
         "max_drawdown": max_drawdown,
+        "strategy_breakdown": strategy_performance_tracker.export(),
     }
 
 
-def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simulations: int) -> None:
+
+
+def _aggregate_strategy_breakdown(results: List[Dict[str, Any]]) -> dict[str, dict[str, float]]:
+    aggregated: dict[str, dict[str, float]] = {}
+
+    for result in results:
+        strategy_breakdown = result.get("strategy_breakdown", {})
+        if not isinstance(strategy_breakdown, dict):
+            continue
+
+        for strategy_name, stats in strategy_breakdown.items():
+            if not isinstance(stats, dict):
+                continue
+
+            current = aggregated.setdefault(
+                strategy_name,
+                {
+                    "trades_count": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "gross_profit": 0.0,
+                    "gross_loss": 0.0,
+                    "net_profit": 0.0,
+                },
+            )
+            current["trades_count"] += int(stats.get("trades_count", 0))
+            current["wins"] += int(stats.get("wins", 0))
+            current["losses"] += int(stats.get("losses", 0))
+            current["gross_profit"] += float(stats.get("gross_profit", 0.0))
+            current["gross_loss"] += float(stats.get("gross_loss", 0.0))
+            current["net_profit"] += float(stats.get("net_profit", 0.0))
+
+    return aggregated
+
+
+def _print_strategy_breakdown(results: List[Dict[str, Any]]) -> None:
+    aggregated = _aggregate_strategy_breakdown(results)
+    if not aggregated:
+        return
+
+    print("--- STRATEGY BREAKDOWN ---")
+    for strategy_name in sorted(aggregated.keys()):
+        stats = aggregated[strategy_name]
+        win_rate = StrategyPerformanceTracker.compute_win_rate(stats)
+        profit_factor = StrategyPerformanceTracker.compute_profit_factor(stats)
+        expectancy = StrategyPerformanceTracker.compute_expectancy(stats)
+
+        print(f"{strategy_name}:")
+        print(f"    Trades: {int(stats['trades_count'])}")
+        print(f"    Win rate: {win_rate:.2f}%")
+        print(f"    Profit factor: {profit_factor:.6f}")
+        print(f"    Expectancy: {expectancy:.6f}")
+
+def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simulations: int) -> None:
     total_runs = len(results)
     net_profits = [result["net_profit"] for result in results]
     total_net_profit = sum(net_profits)
@@ -318,6 +429,7 @@ def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simu
     print(f"Avg trade PnL: {average_trade_pnl:.6f}")
     print(f"Median trade PnL: {median_trade_pnl:.6f}")
     print(f"Avg max drawdown: {average_max_drawdown:.6f}")
+    _print_strategy_breakdown(results)
 
 
 def _run_market_monte_carlo(
@@ -327,7 +439,7 @@ def _run_market_monte_carlo(
     strategy=None,
 ) -> None:
     print(f"Entered MonteCarloRunner.run() - scenario={title}, simulations={simulations}", flush=True)
-    results: List[Dict[str, float]] = []
+    results: List[Dict[str, Any]] = []
     for simulation_index in range(1, simulations + 1):
         result = run_single_backtest(
             market_generator_factory=market_generator_factory,
