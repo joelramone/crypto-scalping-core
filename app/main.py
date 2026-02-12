@@ -26,7 +26,14 @@ def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
             sell_price = float(getattr(trade, "price", 0.0) or 0.0)
             quantity = float(getattr(pending_buy, "quantity", 0.0) or 0.0)
             gross_profit = (sell_price - buy_price) * quantity
-            pnl = gross_profit - (buy_price * TRADE_COMMISSION_RATE)
+
+            buy_fee = float(
+                getattr(pending_buy, "fee", buy_price * quantity * TRADE_COMMISSION_RATE) or 0.0
+            )
+            sell_fee = float(
+                getattr(trade, "fee", sell_price * quantity * TRADE_COMMISSION_RATE) or 0.0
+            )
+            pnl = gross_profit - (buy_fee + sell_fee)
             pnls.append(pnl)
             pending_buy = None
 
