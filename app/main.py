@@ -2,6 +2,7 @@ import random
 from statistics import mean, median, pstdev
 from typing import Any, Callable, Dict, List
 import os
+import time
 
 from importlib import util as importlib_util
 from pathlib import Path
@@ -12,8 +13,11 @@ from app.strategies.multi_strategy_engine import MultiStrategyEngine
 from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
 from app.utils.strategy_performance_tracker import StrategyPerformanceTracker
+from app.utils.logger import configure_logging, get_logger
 
 TRADE_COMMISSION_RATE = 0.001
+BACKTEST_TICK_HARD_LIMIT = 2_000_000
+HEARTBEAT_SECONDS = 5.0
 
 
 MarketGenerator = Callable[[float], float]
@@ -185,7 +189,23 @@ def run_single_backtest(
     ticks: int = 1000,
     initial_price: float = 50000.0,
 ) -> Dict[str, float]:
-    print("Entered Backtester.run()", flush=True)
+    logger = get_logger(__name__)
+    run_start = time.time()
+
+    if ticks <= 0:
+        raise ValueError(f"ticks must be > 0, got {ticks}")
+    if ticks > BACKTEST_TICK_HARD_LIMIT:
+        logger.warning("ticks=%s exceeds hard limit=%s, capping to avoid runaway loops", ticks, BACKTEST_TICK_HARD_LIMIT)
+        ticks = BACKTEST_TICK_HARD_LIMIT
+
+    logger.info(
+        "Starting backtest strategy=%s ticks=%s initial_price=%.2f",
+        getattr(strategy, "__class__", type(strategy)).__name__,
+        ticks,
+        initial_price,
+    )
+    print(f"Backtest started: strategy={strategy.__class__.__name__}, ticks={ticks}", flush=True)
+
     wallet = PaperWallet()
     strategy_performance_tracker = StrategyPerformanceTracker()
 
@@ -201,8 +221,9 @@ def run_single_backtest(
     active_tp: float | None = None
     active_trade_context: dict[str, str] | None = None
     active_buy_trade: Trade | None = None
+    last_output_ts = time.time()
 
-    for _ in range(ticks):
+    for tick_index in range(1, ticks + 1):
         price = market_generator(price)
         close_history.append(price)
 
@@ -263,6 +284,18 @@ def run_single_backtest(
 
         equity_curve.append(wallet.total_pnl({"BTC": price}))
 
+        if tick_index == 1 or tick_index % 200 == 0:
+            elapsed = time.time() - run_start
+            logger.info("Backtest progress tick=%s/%s elapsed=%.2fs", tick_index, ticks, elapsed)
+            print(f"Backtest tick {tick_index}/{ticks} | elapsed={elapsed:.2f}s", flush=True)
+            last_output_ts = time.time()
+
+        if time.time() - last_output_ts > HEARTBEAT_SECONDS:
+            elapsed = time.time() - run_start
+            logger.info("Backtest heartbeat tick=%s/%s elapsed=%.2fs", tick_index, ticks, elapsed)
+            print(f"Backtest heartbeat... tick {tick_index}/{ticks} | elapsed={elapsed:.2f}s", flush=True)
+            last_output_ts = time.time()
+
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
         wallet.sell("BTC/USDT", price, btc_balance)
@@ -300,6 +333,9 @@ def run_single_backtest(
         drawdown = running_peak - equity
         max_drawdown = max(max_drawdown, drawdown)
 
+    elapsed = time.time() - run_start
+    logger.info("Backtest finished ticks=%s trades=%s net_profit=%.4f elapsed=%.2fs", ticks, total_trades, net_profit, elapsed)
+
     return {
         "total_trades": total_trades,
         "total_wins": total_wins,
@@ -313,7 +349,6 @@ def run_single_backtest(
         "max_drawdown": max_drawdown,
         "strategy_breakdown": strategy_performance_tracker.export(),
     }
-
 
 
 
@@ -438,15 +473,21 @@ def _run_market_monte_carlo(
     simulations: int,
     strategy=None,
 ) -> None:
-    print(f"Entered MonteCarloRunner.run() - scenario={title}, simulations={simulations}", flush=True)
+    logger = get_logger(__name__)
+    run_start = time.time()
+    logger.info("Scenario started scenario=%s simulations=%s", title, simulations)
+    print(f"Scenario {title}: starting {simulations} simulations", flush=True)
     results: List[Dict[str, Any]] = []
     for simulation_index in range(1, simulations + 1):
+        logger.info("Evaluating combination %s/%s scenario=%s strategy=%s", simulation_index, simulations, title, getattr(strategy, "__class__", type(strategy)).__name__)
+        print(f"Evaluating combination {simulation_index}/{simulations} ({title})", flush=True)
         result = run_single_backtest(
             market_generator_factory=market_generator_factory,
             strategy=strategy,
         )
         results.append(result)
 
+    logger.info("Scenario finished scenario=%s elapsed=%.2fs", title, time.time() - run_start)
     _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
 
 
@@ -469,7 +510,10 @@ def run_simulation(strategy, simulations: int = 1) -> None:
 
 
 if __name__ == "__main__":
-    print("Entered main()", flush=True)
+    configure_logging()
+    logger = get_logger(__name__)
+    start_time = time.time()
+    logger.info("Starting app.main")
     BreakoutStrategyConfig = _load_breakout_strategy_config_class()
     RSIStrategyConfig = _load_rsi_strategy_config_class()
 
@@ -495,6 +539,9 @@ if __name__ == "__main__":
     )
 
     simulations = int(os.getenv("MONTE_CARLO_SIMULATIONS", "1"))
+    logger.info("Using multi strategy engine simulations=%s", simulations)
     print(f"USING MULTI STRATEGY ENGINE (simulations={simulations})", flush=True)
 
     run_simulation(strategy=strategy_engine, simulations=simulations)
+    logger.info("Total execution time: %.2fs", time.time() - start_time)
+    print(f"Total execution time: {time.time() - start_time:.2f}s", flush=True)
