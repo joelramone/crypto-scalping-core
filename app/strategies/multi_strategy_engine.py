@@ -12,8 +12,12 @@ class MultiStrategyEngine:
         self.regime_detector = regime_detector
         self.rsi_strategy = rsi_strategy
         self.breakout_strategy = breakout_strategy
+        self._entry_log_printed = False
 
     def generate_signal(self, market_data):
+        if not self._entry_log_printed:
+            print("Entered MultiStrategyEngine.generate_signal()", flush=True)
+            self._entry_log_printed = True
         close_prices = market_data.get("close")
         if not close_prices:
             return None
