@@ -1,10 +1,13 @@
 import random
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 from app.agents.strategy_agent import StrategyAgent
 from app.trading.paper_wallet import PaperWallet, Trade
 
 TRADE_COMMISSION_RATE = 0.001
+
+
+MarketGenerator = Callable[[float], float]
 
 
 def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
@@ -40,23 +43,67 @@ def _closed_trade_pnls(trades: List[Trade]) -> List[float]:
     return pnls
 
 
-def run_single_backtest(ticks: int = 1000, initial_price: float = 50000.0) -> Dict[str, float]:
+def _trending_market_generator(initial_price: float) -> MarketGenerator:
+    direction = random.choice((-1.0, 1.0))
+    drift = 0.0007 * direction
+    trend_anchor = initial_price
+
+    def next_price(price: float) -> float:
+        nonlocal trend_anchor
+        trend_anchor = (trend_anchor * 0.995) + (price * 0.005)
+        reversion_component = -0.01 * ((price - trend_anchor) / trend_anchor)
+        random_component = random.uniform(-0.004, 0.004)
+        price_change = drift + random_component + reversion_component
+        return max(100.0, price * (1 + price_change))
+
+    return next_price
+
+
+def _sideways_market_generator(initial_price: float) -> MarketGenerator:
+    mean_price = initial_price
+
+    def next_price(price: float) -> float:
+        nonlocal mean_price
+        mean_price = (mean_price * 0.995) + (price * 0.005)
+        drift = 0.0
+        reversion_component = -0.08 * ((price - mean_price) / mean_price)
+        random_component = random.uniform(-0.003, 0.003)
+        price_change = drift + reversion_component + random_component
+        return max(100.0, price * (1 + price_change))
+
+    return next_price
+
+
+def _high_volatility_market_generator(initial_price: float) -> MarketGenerator:
+    _ = initial_price
+    direction = random.choice((-1.0, 1.0))
+
+    def next_price(price: float) -> float:
+        nonlocal direction
+        if random.random() < 0.35:
+            direction *= -1.0
+
+        shock_size = random.uniform(0.001, 0.015)
+        random_component = random.uniform(-0.012, 0.012)
+        drift = 0.0
+        price_change = drift + (direction * shock_size) + random_component
+        return max(100.0, price * (1 + price_change))
+
+    return next_price
+
+
+def run_single_backtest(
+    market_generator_factory: Callable[[float], MarketGenerator],
+    ticks: int = 1000,
+    initial_price: float = 50000.0,
+) -> Dict[str, float]:
     wallet = PaperWallet()
     strategy = StrategyAgent(wallet=wallet)
 
-    bullish_ticks = 300
-    sideways_ticks = 300
-
     price = initial_price
-    for tick in range(ticks):
-        if tick < bullish_ticks:
-            drift = 0.0005
-        elif tick < bullish_ticks + sideways_ticks:
-            drift = 0.0
-        else:
-            drift = -0.0005
-
-        price *= 1 + random.uniform(-0.005, 0.005) + drift
+    market_generator = market_generator_factory(initial_price)
+    for _ in range(ticks):
+        price = market_generator(price)
         strategy.on_price(price)
 
     btc_balance = wallet.get_balance("BTC")
@@ -81,9 +128,7 @@ def run_single_backtest(ticks: int = 1000, initial_price: float = 50000.0) -> Di
     }
 
 
-def run(simulations: int = 100):
-    results = [run_single_backtest() for _ in range(simulations)]
-
+def _print_monte_carlo_summary(title: str, results: List[Dict[str, float]], simulations: int) -> None:
     total_runs = len(results)
     total_net_profit = sum(result["net_profit"] for result in results)
     total_gross_profit = sum(result["gross_profit"] for result in results)
@@ -107,13 +152,35 @@ def run(simulations: int = 100):
         total_net_profit / total_trades_all_runs if total_trades_all_runs > 0 else 0.0
     )
 
-    print("--- MONTE CARLO ANALYSIS ---")
+    print(f"--- {title} ---")
     print(f"Simulations: {simulations}")
     print(f"Avg net profit: {average_net_profit:.6f}")
     print(f"Avg win rate: {average_win_rate:.2f}%")
     print(f"Avg trades per run: {average_trades_per_run:.2f}")
     print(f"Profit factor: {profit_factor:.6f}")
     print(f"Expectancy per trade: {expectancy_per_trade:.6f}")
+
+
+def _run_market_monte_carlo(
+    title: str,
+    market_generator_factory: Callable[[float], MarketGenerator],
+    simulations: int,
+) -> None:
+    results = [run_single_backtest(market_generator_factory=market_generator_factory) for _ in range(simulations)]
+    _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
+
+
+def run(simulations: int = 100) -> None:
+    scenarios = [
+        ("TRENDING MARKET", _trending_market_generator),
+        ("SIDEWAYS MARKET", _sideways_market_generator),
+        ("HIGH VOLATILITY MARKET", _high_volatility_market_generator),
+    ]
+
+    for index, (title, generator_factory) in enumerate(scenarios):
+        if index > 0:
+            print()
+        _run_market_monte_carlo(title=title, market_generator_factory=generator_factory, simulations=simulations)
 
 
 if __name__ == "__main__":
