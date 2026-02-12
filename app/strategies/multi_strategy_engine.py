@@ -20,18 +20,18 @@ class MultiStrategyEngine:
         if not self._entry_log_printed:
             print("Entered MultiStrategyEngine.generate_signal()", flush=True)
             self._entry_log_printed = True
-        close_prices = market_data.get("close")
-        if not close_prices:
-            return None
-
-        regime = self._detect_regime(close_prices)
+        regime = self.regime_detector.detect(market_data)
+        print(f"Regime detected: {regime}", flush=True)
 
         if regime == self.SIDEWAYS:
+            print("Strategy allowed: RSI", flush=True)
             return self._delegate(self.rsi_strategy, regime, market_data)
 
         if regime == self.HIGH_VOLATILITY:
+            print("Strategy allowed: Breakout", flush=True)
             return self._delegate(self.breakout_strategy, regime, market_data)
 
+        print("Strategy allowed: None", flush=True)
         return None
 
     def consume_last_signal_context(self) -> dict[str, str] | None:
@@ -71,23 +71,3 @@ class MultiStrategyEngine:
         if isinstance(strategy_name, str) and strategy_name:
             return strategy_name
         return strategy.__class__.__name__
-
-    def _detect_regime(self, close_prices: list[float]) -> str | None:
-        regime_state = self.regime_detector.evaluate(close_prices)
-        if regime_state is None:
-            return None
-
-        if isinstance(regime_state, str):
-            return regime_state
-
-        regime_name = getattr(regime_state, "regime", None)
-        if isinstance(regime_name, str):
-            return regime_name
-
-        if getattr(regime_state, "sideways", False):
-            return self.SIDEWAYS
-
-        if getattr(regime_state, "high_vol_expansion", False):
-            return self.HIGH_VOLATILITY
-
-        return None
