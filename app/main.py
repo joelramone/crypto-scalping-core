@@ -4,6 +4,7 @@ from statistics import mean, median, pstdev
 from typing import Any, Callable, Dict, List
 import os
 import time
+from datetime import datetime
 
 from importlib import util as importlib_util
 from pathlib import Path
@@ -20,9 +21,88 @@ TRADE_COMMISSION_RATE = 0.001
 BACKTEST_TICK_HARD_LIMIT = 2_000_000
 HEARTBEAT_SECONDS = 5.0
 DEBUG_METRICS = os.getenv("DEBUG_METRICS", "0") == "1"
+TRADES_AUDIT_CSV_PATH = "trades_audit.csv"
+TRADES_AUDIT_HEADERS = [
+    "timestamp",
+    "strategy_name",
+    "regime",
+    "side",
+    "entry_price",
+    "exit_price",
+    "quantity",
+    "gross_pnl",
+    "fee",
+    "net_pnl",
+    "drawdown_at_trade",
+]
 
 
 MarketGenerator = Callable[[float], float]
+
+
+class TradeAuditLogger:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self._file = None
+        self._writer = None
+
+    def _ensure_writer(self) -> None:
+        if self._writer is not None:
+            return
+
+        file_exists = os.path.exists(self.path)
+        self._file = open(self.path, "a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._file)
+
+        should_write_header = True
+        if file_exists:
+            should_write_header = os.path.getsize(self.path) == 0
+
+        if should_write_header:
+            self._writer.writerow(TRADES_AUDIT_HEADERS)
+            self._file.flush()
+
+    def record_trade(
+        self,
+        *,
+        timestamp: datetime,
+        strategy_name: str,
+        regime: str,
+        side: str,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        gross_pnl: float,
+        fee: float,
+        net_pnl: float,
+        drawdown_at_trade: float,
+    ) -> None:
+        try:
+            self._ensure_writer()
+            if self._writer is None or self._file is None:
+                return
+
+            self._writer.writerow(
+                [
+                    timestamp.isoformat(),
+                    strategy_name,
+                    regime,
+                    side,
+                    entry_price,
+                    exit_price,
+                    quantity,
+                    gross_pnl,
+                    fee,
+                    net_pnl,
+                    drawdown_at_trade,
+                ]
+            )
+            self._file.flush()
+        except OSError as exc:
+            get_logger(__name__).warning("Unable to write trade audit row: %s", exc)
+
+
+TRADE_AUDIT_LOGGER = TradeAuditLogger(TRADES_AUDIT_CSV_PATH)
 
 
 def _load_breakout_strategy_config_class():
@@ -134,6 +214,40 @@ def _record_trade_outcome(strategy: Any, trade_result: str, pnl: float, context:
         record_outcome(trade_result=trade_result, pnl=pnl, context=context)
 
 
+def _audit_closed_trade(
+    *,
+    strategy: Any,
+    context: dict[str, str] | None,
+    buy_trade: Trade,
+    sell_trade: Trade,
+    running_peak_equity: float,
+    current_equity: float,
+) -> None:
+    entry_price = float(getattr(buy_trade, "price", 0.0) or 0.0)
+    exit_price = float(getattr(sell_trade, "price", 0.0) or 0.0)
+    quantity = float(getattr(buy_trade, "quantity", 0.0) or 0.0)
+    gross_pnl = (exit_price - entry_price) * quantity
+    buy_fee = float(getattr(buy_trade, "fee", entry_price * quantity * TRADE_COMMISSION_RATE) or 0.0)
+    sell_fee = float(getattr(sell_trade, "fee", exit_price * quantity * TRADE_COMMISSION_RATE) or 0.0)
+    total_fee = buy_fee + sell_fee
+    net_pnl = gross_pnl - total_fee
+    drawdown_at_trade = max(0.0, running_peak_equity - current_equity)
+
+    TRADE_AUDIT_LOGGER.record_trade(
+        timestamp=getattr(sell_trade, "timestamp", datetime.utcnow()),
+        strategy_name=strategy.__class__.__name__,
+        regime=(context or {}).get("regime_detected", "unknown"),
+        side="LONG",
+        entry_price=entry_price,
+        exit_price=exit_price,
+        quantity=quantity,
+        gross_pnl=gross_pnl,
+        fee=total_fee,
+        net_pnl=net_pnl,
+        drawdown_at_trade=drawdown_at_trade,
+    )
+
+
 
 
 def _trending_market_generator(initial_price: float) -> MarketGenerator:
@@ -224,6 +338,7 @@ def run_single_backtest(
     active_trade_context: dict[str, str] | None = None
     active_buy_trade: Trade | None = None
     last_output_ts = time.time()
+    running_peak_equity = wallet.total_pnl({"BTC": price})
 
     for tick_index in range(1, ticks + 1):
         price = market_generator(price)
@@ -233,7 +348,9 @@ def run_single_backtest(
         rsi = _compute_rsi(close_history)
 
         if atr is None or rsi is None:
-            equity_curve.append(wallet.total_pnl({"BTC": price}))
+            current_equity = wallet.total_pnl({"BTC": price})
+            equity_curve.append(current_equity)
+            running_peak_equity = max(running_peak_equity, current_equity)
             continue
 
         atr_history.append(atr)
@@ -267,6 +384,15 @@ def run_single_backtest(
                             pnl=trade_pnl,
                             context=active_trade_context,
                         )
+                        current_equity = wallet.total_pnl({"BTC": price})
+                        _audit_closed_trade(
+                            strategy=strategy,
+                            context=active_trade_context,
+                            buy_trade=active_buy_trade,
+                            sell_trade=sell_trade,
+                            running_peak_equity=running_peak_equity,
+                            current_equity=current_equity,
+                        )
                 in_position = False
                 active_sl = None
                 active_tp = None
@@ -284,7 +410,9 @@ def run_single_backtest(
                     active_trade_context = _resolve_signal_context(strategy)
                     active_buy_trade = wallet.trades[-1]
 
-        equity_curve.append(wallet.total_pnl({"BTC": price}))
+        current_equity = wallet.total_pnl({"BTC": price})
+        equity_curve.append(current_equity)
+        running_peak_equity = max(running_peak_equity, current_equity)
 
         if tick_index == 1 or tick_index % 200 == 0:
             elapsed = time.time() - run_start
@@ -315,6 +443,15 @@ def run_single_backtest(
                 trade_result=trade_result,
                 pnl=trade_pnl,
                 context=active_trade_context,
+            )
+            current_equity = wallet.total_pnl({"BTC": price})
+            _audit_closed_trade(
+                strategy=strategy,
+                context=active_trade_context,
+                buy_trade=active_buy_trade,
+                sell_trade=sell_trade,
+                running_peak_equity=running_peak_equity,
+                current_equity=current_equity,
             )
 
     trade_pnls = _closed_trade_pnls(wallet.trades)
