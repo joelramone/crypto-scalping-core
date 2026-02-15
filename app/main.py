@@ -1,4 +1,5 @@
 import csv
+import json
 import random
 from statistics import mean, median, pstdev
 from typing import Any, Callable, Dict, List
@@ -19,7 +20,6 @@ from app.utils.logger import configure_logging, get_logger
 
 TRADE_COMMISSION_RATE = 0.001
 BACKTEST_TICK_HARD_LIMIT = 2_000_000
-HEARTBEAT_SECONDS = 5.0
 DEBUG_METRICS = os.getenv("DEBUG_METRICS", "0") == "1"
 TRADES_AUDIT_CSV_PATH = "trades_audit.csv"
 TRADES_AUDIT_HEADERS = [
@@ -314,14 +314,6 @@ def run_single_backtest(
         logger.warning("ticks=%s exceeds hard limit=%s, capping to avoid runaway loops", ticks, BACKTEST_TICK_HARD_LIMIT)
         ticks = BACKTEST_TICK_HARD_LIMIT
 
-    logger.info(
-        "Starting backtest strategy=%s ticks=%s initial_price=%.2f",
-        getattr(strategy, "__class__", type(strategy)).__name__,
-        ticks,
-        initial_price,
-    )
-    print(f"Backtest started: strategy={strategy.__class__.__name__}, ticks={ticks}", flush=True)
-
     wallet = PaperWallet()
     strategy_performance_tracker = StrategyPerformanceTracker()
 
@@ -337,15 +329,15 @@ def run_single_backtest(
     active_tp: float | None = None
     active_trade_context: dict[str, str] | None = None
     active_buy_trade: Trade | None = None
-    last_output_ts = time.time()
     running_peak_equity = wallet.total_pnl({"BTC": price})
 
     for tick_index in range(1, ticks + 1):
         price = market_generator(price)
+        signal_close_history = close_history.copy()
         close_history.append(price)
 
-        atr = _compute_atr(close_history)
-        rsi = _compute_rsi(close_history)
+        atr = _compute_atr(signal_close_history)
+        rsi = _compute_rsi(signal_close_history)
 
         if atr is None or rsi is None:
             current_equity = wallet.total_pnl({"BTC": price})
@@ -414,18 +406,6 @@ def run_single_backtest(
         equity_curve.append(current_equity)
         running_peak_equity = max(running_peak_equity, current_equity)
 
-        if tick_index == 1 or tick_index % 200 == 0:
-            elapsed = time.time() - run_start
-            logger.info("Backtest progress tick=%s/%s elapsed=%.2fs", tick_index, ticks, elapsed)
-            print(f"Backtest tick {tick_index}/{ticks} | elapsed={elapsed:.2f}s", flush=True)
-            last_output_ts = time.time()
-
-        if time.time() - last_output_ts > HEARTBEAT_SECONDS:
-            elapsed = time.time() - run_start
-            logger.info("Backtest heartbeat tick=%s/%s elapsed=%.2fs", tick_index, ticks, elapsed)
-            print(f"Backtest heartbeat... tick {tick_index}/{ticks} | elapsed={elapsed:.2f}s", flush=True)
-            last_output_ts = time.time()
-
     btc_balance = wallet.get_balance("BTC")
     if btc_balance > 0:
         wallet.sell("BTC/USDT", price, btc_balance)
@@ -472,8 +452,6 @@ def run_single_backtest(
         drawdown = running_peak - equity
         max_drawdown = max(max_drawdown, drawdown)
 
-    elapsed = time.time() - run_start
-    logger.info("Backtest finished ticks=%s trades=%s net_profit=%.4f elapsed=%.2fs", ticks, total_trades, net_profit, elapsed)
 
     return {
         "total_trades": total_trades,
@@ -573,7 +551,7 @@ def _compute_percentile(values: List[float], percentile: float) -> float:
     return ordered[lower_index] + (ordered[upper_index] - ordered[lower_index]) * weight
 
 
-def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) -> Dict[str, float]:
+def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) -> Dict[str, Any]:
     total_runs = len(results)
     net_profits = [result["net_profit"] for result in results]
     total_net_profit = sum(net_profits)
@@ -609,6 +587,7 @@ def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) 
     average_trade_pnl = mean(result["average_trade_pnl"] for result in results) if total_runs else 0.0
     median_trade_pnl = median(result["median_trade_pnl"] for result in results) if total_runs else 0.0
     average_max_drawdown = mean(result["max_drawdown"] for result in results) if total_runs else 0.0
+    worst_max_drawdown = max((result["max_drawdown"] for result in results), default=0.0)
     average_expectancy = mean(
         StrategyPerformanceTracker.compute_expectancy(result) for result in results
     ) if total_runs else 0.0
@@ -625,6 +604,8 @@ def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) 
     profitable_run_pct = ((profitable_runs / total_runs) * 100) if total_runs else 0.0
     sharpe_approx = (average_net_profit / net_profit_std) if net_profit_std > 0 else 0.0
     coefficient_of_variation = (net_profit_std / average_net_profit) if average_net_profit != 0 else 0.0
+    drawdowns = [float(result.get("max_drawdown", 0.0)) for result in results]
+    trades_per_run = [int(result.get("total_trades", 0)) for result in results]
 
     return {
         "simulations": simulations,
@@ -653,9 +634,68 @@ def _build_monte_carlo_summary(results: List[Dict[str, Any]], simulations: int) 
         "avg_trade_pnl": average_trade_pnl,
         "median_trade_pnl": median_trade_pnl,
         "avg_max_drawdown": average_max_drawdown,
+        "worst_max_drawdown": worst_max_drawdown,
         "sharpe_ratio_approx": sharpe_approx,
         "coefficient_of_variation": coefficient_of_variation,
+        "_net_profits": [float(value) for value in net_profits],
+        "_max_drawdowns": drawdowns,
+        "_trades_per_run": trades_per_run,
     }
+
+
+def _build_final_monte_carlo_report(summary: Dict[str, float]) -> Dict[str, Any]:
+    total_simulations = int(summary.get("total_runs", 0))
+    std_pnl = float(summary.get("net_profit_std_dev", 0.0))
+    avg_trades = float(summary.get("avg_trades_per_run", 0.0))
+
+    warnings: List[str] = []
+    if std_pnl == 0.0:
+        warnings.append("WARNING: PnL std deviation is zero; Sharpe ratio is not informative.")
+    if avg_trades < 10:
+        warnings.append("WARNING: Low sample size (<10 trades per simulation on average).")
+
+    return {
+        "total_simulations": total_simulations,
+        "mean_pnl": float(summary.get("avg_net_profit", 0.0)),
+        "median_pnl": float(summary.get("median_net_profit", 0.0)),
+        "std_pnl": std_pnl,
+        "sharpe": float(summary.get("sharpe_ratio_approx", 0.0)),
+        "worst_drawdown": float(summary.get("worst_max_drawdown", 0.0)),
+        "avg_drawdown": float(summary.get("avg_max_drawdown", 0.0)),
+        "winrate": float(summary.get("weighted_win_rate", 0.0)),
+        "profitable_simulations_pct": float(summary.get("profitable_run_pct", 0.0)),
+        "expectancy_per_trade": float(summary.get("expectancy_per_trade", 0.0)),
+        "avg_trades_per_simulation": avg_trades,
+        "fees_included": True,
+        "slippage_included": True,
+        "equity_reset_per_simulation": True,
+        "lookahead_bias_prevention": "Signals use rolling historical data available up to current tick only.",
+        "warnings": warnings,
+    }
+
+
+def _print_final_monte_carlo_report(report: Dict[str, Any]) -> None:
+    print("===== MONTECARLO FINAL REPORT =====")
+    print(f"Total simulations: {report['total_simulations']}")
+    print(f"Mean PnL: {report['mean_pnl']:.6f}")
+    print(f"Median PnL: {report['median_pnl']:.6f}")
+    print(f"Std PnL: {report['std_pnl']:.6f}")
+    print(f"Sharpe: {report['sharpe']:.6f}")
+    print(f"Worst DD: {report['worst_drawdown']:.6f}")
+    print(f"Avg DD: {report['avg_drawdown']:.6f}")
+    print(f"Winrate: {report['winrate']:.2f}%")
+    print(f"% Profitable Sims: {report['profitable_simulations_pct']:.2f}%")
+    print(f"Expectancy: {report['expectancy_per_trade']:.6f}")
+    print(f"Avg trades: {report['avg_trades_per_simulation']:.2f}")
+
+    for warning in report.get("warnings", []):
+        print(warning)
+
+
+def _save_monte_carlo_report_json(report: Dict[str, Any], output_path: str = "montecarlo_report.json") -> None:
+    with open(output_path, "w", encoding="utf-8") as json_file:
+        json.dump(report, json_file, indent=2)
+    print(f"Saved Monte Carlo report JSON: {output_path}")
 
 
 def _print_monte_carlo_summary(title: str, results: List[Dict[str, Any]], simulations: int) -> Dict[str, float]:
@@ -699,15 +739,9 @@ def _run_market_monte_carlo(
     simulations: int,
     strategy=None,
 ) -> Dict[str, float]:
-    logger = get_logger(__name__)
     run_start = time.time()
-    logger.info("Scenario started scenario=%s simulations=%s", title, simulations)
-    print(f"Scenario {title}: starting {simulations} simulations", flush=True)
     results: List[Dict[str, Any]] = []
     for simulation_index in range(1, simulations + 1):
-        simulation_started = time.time()
-        logger.info("Evaluating combination %s/%s scenario=%s strategy=%s", simulation_index, simulations, title, getattr(strategy, "__class__", type(strategy)).__name__)
-
         if hasattr(strategy, "regime_detector") and hasattr(strategy.regime_detector, "reset_state"):
             strategy.regime_detector.reset_state()
 
@@ -717,19 +751,7 @@ def _run_market_monte_carlo(
         )
         results.append(result)
 
-        elapsed = time.time() - run_start
-        average_duration = elapsed / simulation_index
-        eta_seconds = average_duration * (simulations - simulation_index)
-        print(
-            f"Simulation {simulation_index}/{simulations} | "
-            f"Elapsed: {elapsed:.2f}s | "
-            f"ETA: {eta_seconds:.2f}s | "
-            f"Last sim: {time.time() - simulation_started:.2f}s",
-            flush=True,
-        )
-
     total_elapsed = time.time() - run_start
-    logger.info("Scenario finished scenario=%s elapsed=%.2fs", title, total_elapsed)
     summary = _print_monte_carlo_summary(title=title, results=results, simulations=simulations)
     summary["elapsed_seconds"] = total_elapsed
     return summary
@@ -776,6 +798,38 @@ def _print_research_summary(results: Dict[str, Dict[str, float]]) -> None:
     print(f"Regímenes con drawdown excesivo: {', '.join(excessive_dd) if excessive_dd else 'Ninguno'}")
 
 
+
+
+def _aggregate_final_report_from_scenarios(research_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    all_net_profits: List[float] = []
+    all_drawdowns: List[float] = []
+    all_trades_per_run: List[int] = []
+    total_trades = 0
+    total_wins = 0
+
+    for summary in research_results.values():
+        all_net_profits.extend(float(v) for v in summary.get("_net_profits", []))
+        all_drawdowns.extend(float(v) for v in summary.get("_max_drawdowns", []))
+        all_trades_per_run.extend(int(v) for v in summary.get("_trades_per_run", []))
+        total_trades += int(summary.get("total_trades", 0))
+        total_wins += int(summary.get("total_wins", 0))
+
+    combined = {
+        "total_runs": len(all_net_profits),
+        "avg_net_profit": mean(all_net_profits) if all_net_profits else 0.0,
+        "median_net_profit": median(all_net_profits) if all_net_profits else 0.0,
+        "net_profit_std_dev": pstdev(all_net_profits) if len(all_net_profits) > 1 else 0.0,
+        "sharpe_ratio_approx": (mean(all_net_profits) / pstdev(all_net_profits)) if len(all_net_profits) > 1 and pstdev(all_net_profits) > 0 else 0.0,
+        "worst_max_drawdown": max(all_drawdowns) if all_drawdowns else 0.0,
+        "avg_max_drawdown": mean(all_drawdowns) if all_drawdowns else 0.0,
+        "weighted_win_rate": ((total_wins / total_trades) * 100.0) if total_trades > 0 else 0.0,
+        "profitable_run_pct": ((sum(1 for v in all_net_profits if v > 0) / len(all_net_profits)) * 100.0) if all_net_profits else 0.0,
+        "expectancy_per_trade": (sum(all_net_profits) / total_trades) if total_trades > 0 else 0.0,
+        "avg_trades_per_run": mean(all_trades_per_run) if all_trades_per_run else 0.0,
+    }
+    return _build_final_monte_carlo_report(combined)
+
+
 def run_simulation(strategy, simulations: int = 300) -> Dict[str, Dict[str, float]]:
     scenarios = [
         ("TRENDING", _trending_market_generator),
@@ -797,6 +851,10 @@ def run_simulation(strategy, simulations: int = 300) -> Dict[str, Dict[str, floa
 
     _save_research_csv(research_results)
     _print_research_summary(research_results)
+
+    final_report = _aggregate_final_report_from_scenarios(research_results)
+    _print_final_monte_carlo_report(final_report)
+    _save_monte_carlo_report_json(final_report)
     return research_results
 
 

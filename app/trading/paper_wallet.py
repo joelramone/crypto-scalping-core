@@ -12,8 +12,9 @@ class Trade:
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 class PaperWallet:
-    def __init__(self, initial_balance: float = 250.0, fee_rate: float = 0.001):
+    def __init__(self, initial_balance: float = 250.0, fee_rate: float = 0.001, slippage_rate: float = 0.0005):
         self.fee_rate = fee_rate
+        self.slippage_rate = max(0.0, slippage_rate)
         self.balances: Dict[str, float] = {
             "USDT": initial_balance
         }
@@ -24,7 +25,8 @@ class PaperWallet:
 
     def buy(self, symbol: str, price: float, quantity: float):
         base, quote = symbol.split("/")
-        cost = price * quantity
+        execution_price = price * (1 + self.slippage_rate)
+        cost = execution_price * quantity
         fee = cost * self.fee_rate
         total_cost = cost + fee
 
@@ -35,7 +37,7 @@ class PaperWallet:
         self.balances[base] = self.get_balance(base) + quantity
 
         self.trades.append(
-            Trade(symbol, "buy", price, quantity, fee)
+            Trade(symbol, "buy", execution_price, quantity, fee)
         )
 
     def sell(self, symbol: str, price: float, quantity: float):
@@ -43,7 +45,8 @@ class PaperWallet:
         if self.get_balance(base) < quantity:
             raise ValueError("Insufficient asset balance")
 
-        revenue = price * quantity
+        execution_price = price * (1 - self.slippage_rate)
+        revenue = execution_price * quantity
         fee = revenue * self.fee_rate
         net_revenue = revenue - fee
 
@@ -51,7 +54,7 @@ class PaperWallet:
         self.balances[quote] = self.get_balance(quote) + net_revenue
 
         self.trades.append(
-            Trade(symbol, "sell", price, quantity, fee)
+            Trade(symbol, "sell", execution_price, quantity, fee)
         )
 
     def total_pnl(self, current_prices: Dict[str, float]) -> float:
