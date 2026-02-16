@@ -5,7 +5,7 @@ from statistics import mean, median, pstdev
 from typing import Any, Callable, Dict, List
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 
 from importlib import util as importlib_util
 from pathlib import Path
@@ -17,7 +17,7 @@ from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 from app.trading.paper_wallet import PaperWallet, Trade
 from app.utils.strategy_performance_tracker import StrategyPerformanceTracker
 from app.utils.logger import configure_logging, get_logger
-from app.utils.datetime_utils import ensure_utc
+from app.utils.datetime_utils import ensure_utc, utc_isoformat, utc_now
 
 TRADE_COMMISSION_RATE = 0.001
 BACKTEST_TICK_HARD_LIMIT = 2_000_000
@@ -85,7 +85,7 @@ class TradeAuditLogger:
 
             self._writer.writerow(
                 [
-                    timestamp.isoformat(),
+                    utc_isoformat(timestamp),
                     strategy_name,
                     regime,
                     side,
@@ -235,7 +235,7 @@ def _audit_closed_trade(
     drawdown_at_trade = max(0.0, running_peak_equity - current_equity)
 
     TRADE_AUDIT_LOGGER.record_trade(
-        timestamp=ensure_utc(getattr(sell_trade, "timestamp", datetime.now(UTC))),
+        timestamp=ensure_utc(getattr(sell_trade, "timestamp", utc_now())),
         strategy_name=strategy.__class__.__name__,
         regime=(context or {}).get("regime_detected", "unknown"),
         side="LONG",
