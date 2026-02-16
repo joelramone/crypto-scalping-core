@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
-from datetime import datetime
+from datetime import UTC, datetime
+
+from app.utils.datetime_utils import ensure_utc
 
 @dataclass
 class Trade:
@@ -9,7 +11,10 @@ class Trade:
     price: float
     quantity: float
     fee: float
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        self.timestamp = ensure_utc(self.timestamp)
 
 class PaperWallet:
     def __init__(self, initial_balance: float = 250.0, fee_rate: float = 0.001, slippage_rate: float = 0.0005):
