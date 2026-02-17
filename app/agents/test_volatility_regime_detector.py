@@ -34,6 +34,28 @@ class VolatilityRegimeDetectorTests(unittest.TestCase):
         self.assertEqual(regime, RegimeClassifier.HIGH_VOL)
         self.assertGreaterEqual(score.value, 0.55)
 
+
+    def test_realized_vol_series_matches_reference_implementation(self):
+        close = [100.0, 101.0, 99.0, 103.0, 104.5, 102.0, 105.0, 107.5]
+        window = 3
+
+        expected = []
+        returns = []
+        for i in range(1, len(close)):
+            prev = close[i - 1]
+            ret = ((close[i] - prev) / prev) if prev else 0.0
+            returns.append(ret)
+
+        for i in range(window, len(returns) + 1):
+            sample = returns[i - window : i]
+            squared_sum = sum(v * v for v in sample)
+            expected.append((squared_sum / window) ** 0.5)
+
+        result = VolatilityMetrics._realized_vol_series(close, window)
+        self.assertEqual(len(result), len(expected))
+        for res, exp in zip(result, expected):
+            self.assertAlmostEqual(res, exp, places=12)
+
     def test_rejects_fake_breakout_without_volume_confirmation(self):
         metrics = VolatilityMetrics()
         score_calculator = RegimeScoreCalculator()
