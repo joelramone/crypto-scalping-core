@@ -60,6 +60,11 @@ class HighVolEngine:
     def record_trade_outcome(self, payload: dict[str, float | str]) -> None:
         self._trade_log.append(payload)
 
+    def reset(self) -> None:
+        self._last_signal_context = None
+        self._trade_log.clear()
+        self.classifier.reset()
+
     @property
     def trade_log(self) -> list[dict[str, float | str]]:
         return list(self._trade_log)

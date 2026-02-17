@@ -13,6 +13,11 @@ from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.high_vol_engine import HighVolEngine
 from app.utils.logger import configure_logging, get_logger
 
+try:
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - optional dependency
+    tqdm = None
+
 
 def _load_breakout_strategy_config_class():
     config_path = Path(__file__).resolve().parent / "config" / "breakout_config.py"
@@ -79,6 +84,9 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
     low: list[float] = [price]
     volume: list[float] = [1000.0]
     atr_series: list[float] = []
+    true_ranges: list[float] = []
+    atr_window = 14
+    rolling_tr_sum = 0.0
     equity_curve: list[float] = [0.0]
     cumulative_r = 0.0
     r_multiples: list[float] = []
@@ -99,10 +107,15 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
         low.append(candle_low)
         volume.append(candle_volume)
 
-        atr = _compute_atr(high, low, close)
-        if atr is None:
+        tr = max(candle_high - candle_low, abs(candle_high - previous_price), abs(candle_low - previous_price))
+        true_ranges.append(tr)
+        if len(true_ranges) < atr_window:
             equity_curve.append(cumulative_r)
             continue
+        rolling_tr_sum += tr
+        if len(true_ranges) > atr_window:
+            rolling_tr_sum -= true_ranges[-(atr_window + 1)]
+        atr = rolling_tr_sum / atr_window
         atr_series.append(atr)
 
         market_data = {
@@ -196,10 +209,42 @@ def _compute_max_drawdown(equity_curve: list[float]) -> float:
 
 
 def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, Any]:
-    results = [run_single_backtest(strategy=strategy) for _ in range(runs)]
+    return run_monte_carlo_profiled(strategy=strategy, runs=runs)
 
-    net_profits = [r["net_profit_r"] for r in results]
-    trades_per_run = [r["trades"] for r in results]
+
+def run_monte_carlo_profiled(
+    strategy: HighVolEngine,
+    runs: int = 10_000,
+    ticks: int = 1500,
+    initial_price: float = 50000.0,
+    progress: bool = False,
+    report_every: int = 100,
+) -> dict[str, Any]:
+    if runs <= 0:
+        raise ValueError("runs must be > 0")
+
+    iterator = range(runs)
+    if progress and tqdm is not None:
+        iterator = tqdm(iterator, total=runs, desc="Monte Carlo")
+
+    results: list[dict[str, Any]] = []
+    sim_times_ms: list[float] = []
+    block_times_ms: list[float] = []
+    block_start = time.perf_counter()
+
+    for idx in iterator:
+        strategy.reset()
+        sim_start = time.perf_counter()
+        results.append(run_single_backtest(strategy=strategy, ticks=ticks, initial_price=initial_price))
+        sim_times_ms.append((time.perf_counter() - sim_start) * 1000.0)
+
+        if report_every > 0 and (idx + 1) % report_every == 0:
+            block_elapsed_ms = (time.perf_counter() - block_start) * 1000.0
+            block_times_ms.append(block_elapsed_ms)
+            block_start = time.perf_counter()
+
+    net_profits = [float(r["net_profit_r"]) for r in results]
+    trades_per_run = [int(r["trades"]) for r in results]
     all_r = [item for r in results for item in r["r_distribution"]]
 
     total_wins = sum(r["wins"] for r in results)
@@ -207,7 +252,11 @@ def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, An
     gross_profit = sum(sum(x for x in r["r_distribution"] if x > 0) for r in results)
     gross_loss = abs(sum(sum(x for x in r["r_distribution"] if x < 0) for r in results))
 
-    sharpe = (mean(net_profits) / pstdev(net_profits)) if len(net_profits) > 1 and pstdev(net_profits) > 0 else 0.0
+    net_profits_std = pstdev(net_profits) if len(net_profits) > 1 else 0.0
+    sharpe = (mean(net_profits) / net_profits_std) if net_profits_std > 0 else 0.0
+
+    avg_sim_time_ms = mean(sim_times_ms) if sim_times_ms else 0.0
+    avg_block_time_ms = mean(block_times_ms) if block_times_ms else 0.0
 
     return {
         "runs": runs,
@@ -223,6 +272,11 @@ def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, An
             "p95": _percentile(all_r, 0.95),
         },
         "sample_trade_logs": results[0]["trade_logs"][:5] if results else [],
+        "profiling": {
+            "avg_simulation_ms": avg_sim_time_ms,
+            "avg_time_per_100_sims_ms": avg_block_time_ms,
+            "progress_enabled": bool(progress and tqdm is not None),
+        },
     }
 
 
@@ -253,9 +307,12 @@ if __name__ == "__main__":
     high_vol_engine = HighVolEngine(breakout_strategy=strategy)
 
     runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
+    show_progress = os.getenv("MONTE_CARLO_PROGRESS", "0") == "1"
+    verbose_output = os.getenv("MONTE_CARLO_VERBOSE", "1") == "1"
     start = time.time()
-    metrics = run_monte_carlo(strategy=high_vol_engine, runs=runs)
+    metrics = run_monte_carlo_profiled(strategy=high_vol_engine, runs=runs, progress=show_progress)
 
-    logger.info("HIGH_VOL MVP metrics=%s", metrics)
-    print(metrics)
-    print(f"Elapsed: {time.time() - start:.2f}s")
+    if verbose_output:
+        logger.info("HIGH_VOL MVP metrics=%s", metrics)
+        print(metrics)
+        print(f"Elapsed: {time.time() - start:.2f}s")
