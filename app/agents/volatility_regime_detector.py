@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
 from statistics import mean
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -123,18 +124,22 @@ class VolatilityMetrics:
         if len(close) < window + 1:
             return []
 
-        returns: list[float] = []
-        for i in range(1, len(close)):
-            prev = close[i - 1]
-            ret = ((close[i] - prev) / prev) if prev else 0.0
-            returns.append(ret)
+        close_array = np.asarray(close, dtype=np.float64)
+        prev_close = close_array[:-1]
+        curr_close = close_array[1:]
 
-        output: list[float] = []
-        for i in range(window, len(returns) + 1):
-            sample = returns[i - window : i]
-            squared_sum = sum(v * v for v in sample)
-            output.append(sqrt(squared_sum / window))
-        return output
+        returns = np.divide(
+            curr_close - prev_close,
+            prev_close,
+            out=np.zeros_like(curr_close),
+            where=prev_close != 0,
+        )
+
+        squared_returns = returns * returns
+        window_kernel = np.ones(window, dtype=np.float64)
+        rolling_squared_sum = np.convolve(squared_returns, window_kernel, mode="valid")
+
+        return np.sqrt(rolling_squared_sum / window).tolist()
 
     @staticmethod
     def _percentile_rank(values: list[float], target: float) -> float:
