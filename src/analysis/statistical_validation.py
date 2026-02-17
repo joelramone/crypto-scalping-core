@@ -22,6 +22,7 @@ class StatisticalValidator:
     """Statistical validator for trade-level strategy performance."""
 
     _PNL_COLUMNS = ("pnl", "profit", "net_profit", "returns", "return")
+    _PATH_FAILSAFE_PADDING = 5
 
     def __init__(self, trades_df: pd.DataFrame):
         if trades_df is None or trades_df.empty:
@@ -96,9 +97,9 @@ class StatisticalValidator:
 
         for i in range(iterations):
             shuffled = rng.permutation(pnl_values)
-            equity_curve = self.initial_capital + np.cumsum(shuffled)
-            final_equities[i] = float(equity_curve[-1])
-            if np.any(equity_curve <= 0):
+            simulation = self._simulate_equity_path(shuffled)
+            final_equities[i] = simulation["final_equity"]
+            if simulation["ruined"]:
                 ruins += 1
 
         result = MonteCarloResult(
@@ -110,6 +111,42 @@ class StatisticalValidator:
             percentile_95=float(np.percentile(final_equities, 95)),
         )
         return result.__dict__
+
+    def _simulate_equity_path(self, shuffled_pnl: np.ndarray) -> dict[str, float | bool]:
+        """Simulate one shuffled PnL path with explicit loop controls.
+
+        Notes:
+        - We advance `idx` on every loop iteration to guarantee forward progress.
+        - We terminate when all shuffled trades are consumed (idx >= total_points).
+        - We include a failsafe (`max_steps`) as protection against accidental infinite loops
+          if this method is modified in the future.
+        """
+
+        idx = 0
+        steps = 0
+        total_points = int(shuffled_pnl.shape[0])
+        max_steps = total_points + self._PATH_FAILSAFE_PADDING
+
+        equity = float(self.initial_capital)
+        ruined = False
+
+        while idx < total_points:
+            # Failsafe to avoid eternal loops if index progress is broken in future changes.
+            if steps >= max_steps:
+                raise RuntimeError(
+                    "Monte Carlo path exceeded failsafe step limit. "
+                    "Check index progression and loop termination conditions."
+                )
+
+            equity += float(shuffled_pnl[idx])
+            if equity <= 0:
+                ruined = True
+
+            # Critical for loop safety: always advance index and step counters.
+            idx += 1
+            steps += 1
+
+        return {"final_equity": equity, "ruined": ruined}
 
     def bootstrap_confidence_interval(self, n_iterations: int = 1000) -> dict[str, float]:
         if n_iterations <= 0:
