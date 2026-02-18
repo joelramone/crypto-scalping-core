@@ -11,6 +11,7 @@ from importlib import util as importlib_util
 from pathlib import Path
 from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.high_vol_engine import HighVolEngine
+from app.trading.execution_metrics import compute_r_multiple
 from app.utils.logger import configure_logging, get_logger
 
 try:
@@ -35,7 +36,9 @@ class Position:
     entry: float
     sl: float
     tp: float
-    risk: float
+    initial_sl: float
+    risk_per_trade: float
+    reward_per_trade: float
     opened_tick: int
     regime_score: float
     atr: float
@@ -73,6 +76,9 @@ def _high_volatility_market_generator(initial_price: float):
         return max(100.0, price * (1 + direction * shock + random_component))
 
     return next_price
+
+
+logger = get_logger(__name__)
 
 
 def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_price: float = 50000.0) -> dict[str, Any]:
@@ -140,21 +146,32 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
             hit_tp = (active.side == "LONG" and price >= active.tp) or (active.side == "SHORT" and price <= active.tp)
 
             if hit_sl or hit_tp:
-                exit_price = price
-                side_mult = 1.0 if active.side == "LONG" else -1.0
-                pnl = (exit_price - active.entry) * side_mult
-                r_multiple = pnl / active.risk if active.risk else 0.0
+                exit_reason = "TP" if hit_tp else "SL"
+                exit_price = active.tp if hit_tp else active.sl
+                r_multiple = compute_r_multiple(
+                    side=active.side,
+                    entry_price=active.entry,
+                    exit_price=exit_price,
+                    stop_price=active.initial_sl,
+                )
+
+                if exit_reason == "SL" and r_multiple < -1.01:
+                    logger.warning("Detected loss below -1.01R without slippage model: r_multiple=%.4f", r_multiple)
+                    assert r_multiple >= -1.01, f"Stop-loss exceeded max tolerated loss: {r_multiple:.4f}R"
+
                 r_multiples.append(r_multiple)
                 trade_logs.append(
                     {
                         "regime_score": active.regime_score,
                         "atr": active.atr,
                         "entry_price": active.entry,
-                        "stop": active.sl,
+                        "stop": active.initial_sl,
                         "target": active.tp,
+                        "risk_per_trade": active.risk_per_trade,
+                        "reward_per_trade": active.reward_per_trade,
                         "r_multiple": r_multiple,
                         "duration_ticks": tick - active.opened_tick,
-                        "exit_reason": "TP" if hit_tp else "SL",
+                        "exit_reason": exit_reason,
                     }
                 )
                 strategy.record_trade_outcome(trade_logs[-1])
@@ -164,12 +181,35 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
 
         if active is None and signal:
             context = strategy.consume_last_signal_context() or {}
+            entry_price = float(signal["entry"])
+            stop_price = float(signal["sl"])
+            target_price = float(signal["tp"])
+            side = str(signal["side"])
+            risk_per_trade = abs(entry_price - stop_price)
+            reward_per_trade = abs(target_price - entry_price)
+
+            if risk_per_trade <= 0:
+                raise ValueError("risk_per_trade must be greater than zero")
+
+            min_rr = signal.get("min_rr")
+            if min_rr is not None:
+                target_r = compute_r_multiple(side=side, entry_price=entry_price, exit_price=target_price, stop_price=stop_price)
+                if target_r < float(min_rr):
+                    logger.warning(
+                        "Configured target is below min_rr: target_r=%.4f min_rr=%.4f side=%s",
+                        target_r,
+                        float(min_rr),
+                        side,
+                    )
+
             active = Position(
-                side=str(signal["side"]),
-                entry=float(signal["entry"]),
-                sl=float(signal["sl"]),
-                tp=float(signal["tp"]),
-                risk=float(signal.get("risk", abs(float(signal["entry"]) - float(signal["sl"])))),
+                side=side,
+                entry=entry_price,
+                sl=stop_price,
+                tp=target_price,
+                initial_sl=stop_price,
+                risk_per_trade=risk_per_trade,
+                reward_per_trade=reward_per_trade,
                 opened_tick=tick,
                 regime_score=float(context.get("regime_score", 0.0)),
                 atr=float(context.get("atr", atr)),
