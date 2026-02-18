@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+output*.txt
+full_output.txt
+real_output.txt
+montecarlo_report.json
+research_results_*.csv
+trades_audit.csv
+venv/
+.env
+.DS_Store
+Thumbs.db
