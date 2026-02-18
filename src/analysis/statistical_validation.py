@@ -18,6 +18,146 @@ class MonteCarloResult:
     percentile_95: float
 
 
+class MonteCarloBootstrap:
+    """Bootstrap Monte Carlo over realized trade R-multiples.
+
+    This implementation does **not** shuffle OHLC prices or alter market time structure.
+    It resamples only the distribution of realized R-multiples from already executed trades.
+    """
+
+    _R_KEYS = ("r_multiple", "r_value", "r", "R")
+
+    def __init__(
+        self,
+        trades: list[Any],
+        runs: int = 10_000,
+        initial_equity: float = 0.0,
+        random_state: int | None = 42,
+    ):
+        if not trades:
+            raise ValueError("trades must be a non-empty list")
+        if runs <= 0:
+            raise ValueError("runs must be > 0")
+
+        self.trades = trades
+        self.runs = int(runs)
+        self.initial_equity = float(initial_equity)
+        self.r_values = self._extract_r_values(trades)
+        self._rng = np.random.default_rng(random_state)
+
+    @classmethod
+    def _extract_r_values(cls, trades: list[Any]) -> np.ndarray:
+        r_values: list[float] = []
+
+        for trade in trades:
+            value: Any | None = None
+
+            if isinstance(trade, dict):
+                for key in cls._R_KEYS:
+                    if key in trade:
+                        value = trade[key]
+                        break
+            else:
+                for key in cls._R_KEYS:
+                    if hasattr(trade, key):
+                        value = getattr(trade, key)
+                        break
+
+            if value is None:
+                continue
+
+            try:
+                r_values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+
+        if not r_values:
+            raise ValueError("No valid R-multiples found in trades")
+
+        return np.asarray(r_values, dtype=float)
+
+    def run(self) -> dict[str, Any]:
+        n = int(self.r_values.shape[0])
+        expectancy_dist = np.empty(self.runs, dtype=float)
+        profit_factor_dist = np.empty(self.runs, dtype=float)
+        max_drawdown_dist = np.empty(self.runs, dtype=float)
+        sharpe_dist = np.empty(self.runs, dtype=float)
+        equity_curves: list[list[float]] = []
+
+        for i in range(self.runs):
+            sample = self._rng.choice(self.r_values, size=n, replace=True)
+            equity_curve = self._build_equity_curve(sample)
+
+            expectancy_dist[i] = float(np.mean(sample))
+            profit_factor_dist[i] = self._profit_factor(sample)
+            max_drawdown_dist[i] = self._max_drawdown(equity_curve)
+            sharpe_dist[i] = self._sharpe(sample)
+            equity_curves.append(equity_curve.tolist())
+
+        distributions = {
+            "expectancy": expectancy_dist.tolist(),
+            "profit_factor": profit_factor_dist.tolist(),
+            "max_drawdown": max_drawdown_dist.tolist(),
+            "sharpe": sharpe_dist.tolist(),
+            "equity_curves": equity_curves,
+        }
+
+        percentiles = {
+            "expectancy": self._percentiles(expectancy_dist),
+            "profit_factor": self._percentiles(profit_factor_dist),
+            "max_drawdown": self._percentiles(max_drawdown_dist),
+            "sharpe": self._percentiles(sharpe_dist),
+        }
+
+        return {
+            "runs": self.runs,
+            "trades_per_run": n,
+            "r_values": self.r_values.tolist(),
+            "distributions": distributions,
+            "percentiles": percentiles,
+        }
+
+    def _build_equity_curve(self, sample: np.ndarray) -> np.ndarray:
+        cumulative = np.cumsum(sample, dtype=float)
+        return np.concatenate(([self.initial_equity], self.initial_equity + cumulative))
+
+    @staticmethod
+    def _profit_factor(sample: np.ndarray) -> float:
+        gross_profit = float(sample[sample > 0].sum())
+        gross_loss = float(np.abs(sample[sample < 0].sum()))
+
+        if gross_loss == 0:
+            return float("inf") if gross_profit > 0 else 0.0
+
+        return float(gross_profit / gross_loss)
+
+    @staticmethod
+    def _max_drawdown(equity_curve: np.ndarray) -> float:
+        peaks = np.maximum.accumulate(equity_curve)
+        drawdowns = peaks - equity_curve
+        return float(np.max(drawdowns))
+
+    @staticmethod
+    def _sharpe(sample: np.ndarray) -> float:
+        if sample.shape[0] < 2:
+            return 0.0
+
+        std = float(np.std(sample, ddof=1))
+        if std == 0:
+            return 0.0
+
+        return float(np.sqrt(sample.shape[0]) * (float(np.mean(sample)) / std))
+
+    @staticmethod
+    def _percentiles(values: np.ndarray) -> dict[str, float]:
+        p05, p50, p95 = np.percentile(values, [5, 50, 95])
+        return {
+            "p05": float(p05),
+            "p50": float(p50),
+            "p95": float(p95),
+        }
+
+
 class StatisticalValidator:
     """Statistical validator for trade-level strategy performance."""
 
