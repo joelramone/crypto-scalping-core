@@ -1,2 +1,4 @@
 # No external dependencies required for the project skeleton.
 numpy>=1.26,<3.0
+pandas>=2.0,<3.0
+requests>=2.31,<3.0
