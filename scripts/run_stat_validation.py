@@ -83,6 +83,8 @@ def main() -> None:
 
     plots = _save_plots(validator, args.output_dir)
 
+    robustness = validator.full_robustness_report()
+
     result = {
         "input": {
             "csv": str(args.csv),
@@ -100,6 +102,7 @@ def main() -> None:
         "monte_carlo": monte_carlo,
         "bootstrap": bootstrap,
         "distribution_test": distribution,
+        "robustness": robustness,
         "artifacts": plots,
     }
 

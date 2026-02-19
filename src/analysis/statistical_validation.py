@@ -321,3 +321,275 @@ class StatisticalValidator:
             "t_statistic": float(t_stat),
             "t_test_p_value": float(t_p_value),
         }
+
+    @staticmethod
+    def _compute_metrics(returns: np.ndarray) -> dict[str, float]:
+        trades = int(returns.shape[0])
+        expectancy = float(np.mean(returns)) if trades else 0.0
+
+        gross_profit = float(returns[returns > 0].sum())
+        gross_loss = float(np.abs(returns[returns < 0].sum()))
+        if gross_loss == 0:
+            profit_factor = float("inf") if gross_profit > 0 else 0.0
+        else:
+            profit_factor = float(gross_profit / gross_loss)
+
+        if trades < 2:
+            sharpe = 0.0
+        else:
+            std = float(np.std(returns, ddof=1))
+            sharpe = 0.0 if std == 0 else float(np.sqrt(trades) * (expectancy / std))
+
+        return {
+            "trades": float(trades),
+            "expectancy": expectancy,
+            "profit_factor": profit_factor,
+            "sharpe": sharpe,
+        }
+
+    def shuffle_test_returns(self, iterations: int = 5000, random_state: int = 7) -> dict[str, Any]:
+        """Permutation test using sign-shuffling to stress directional edge.
+
+        This preserves absolute return magnitude and randomizes direction.
+        """
+        if iterations <= 0:
+            raise ValueError("iterations must be > 0")
+
+        rng = np.random.default_rng(random_state)
+        returns = self.pnl.to_numpy(dtype=float)
+        observed = self._compute_metrics(returns)
+
+        abs_returns = np.abs(returns)
+        shuffled_expectancies = np.empty(iterations, dtype=float)
+        shuffled_sharpes = np.empty(iterations, dtype=float)
+
+        for i in range(iterations):
+            random_signs = rng.choice(np.array([-1.0, 1.0]), size=abs_returns.shape[0], replace=True)
+            shuffled = abs_returns * random_signs
+            shuffled_metrics = self._compute_metrics(shuffled)
+            shuffled_expectancies[i] = shuffled_metrics["expectancy"]
+            shuffled_sharpes[i] = shuffled_metrics["sharpe"]
+
+        p_value_expectancy = float((np.sum(shuffled_expectancies >= observed["expectancy"]) + 1) / (iterations + 1))
+        p_value_sharpe = float((np.sum(shuffled_sharpes >= observed["sharpe"]) + 1) / (iterations + 1))
+
+        return {
+            "observed": observed,
+            "null_distribution": {
+                "expectancy_mean": float(np.mean(shuffled_expectancies)),
+                "expectancy_std": float(np.std(shuffled_expectancies, ddof=1)),
+                "sharpe_mean": float(np.mean(shuffled_sharpes)),
+                "sharpe_std": float(np.std(shuffled_sharpes, ddof=1)),
+            },
+            "p_values": {
+                "expectancy": p_value_expectancy,
+                "sharpe": p_value_sharpe,
+            },
+        }
+
+    def bootstrap_resampling_real(self, iterations: int = 5000, random_state: int = 11) -> dict[str, Any]:
+        if iterations <= 0:
+            raise ValueError("iterations must be > 0")
+
+        rng = np.random.default_rng(random_state)
+        returns = self.pnl.to_numpy(dtype=float)
+        n = returns.shape[0]
+
+        expectancy = np.empty(iterations, dtype=float)
+        profit_factor = np.empty(iterations, dtype=float)
+        sharpe = np.empty(iterations, dtype=float)
+
+        for i in range(iterations):
+            sample = rng.choice(returns, size=n, replace=True)
+            metrics = self._compute_metrics(sample)
+            expectancy[i] = metrics["expectancy"]
+            profit_factor[i] = metrics["profit_factor"]
+            sharpe[i] = metrics["sharpe"]
+
+        return {
+            "expectancy_ci_95": [float(x) for x in np.percentile(expectancy, [2.5, 97.5])],
+            "profit_factor_ci_95": [float(x) for x in np.percentile(profit_factor, [2.5, 97.5])],
+            "sharpe_ci_95": [float(x) for x in np.percentile(sharpe, [2.5, 97.5])],
+            "means": {
+                "expectancy": float(np.mean(expectancy)),
+                "profit_factor": float(np.mean(profit_factor[np.isfinite(profit_factor)])) if np.isfinite(profit_factor).any() else float("inf"),
+                "sharpe": float(np.mean(sharpe)),
+            },
+        }
+
+    def walk_forward_split(self, folds: int = 4, min_train_fraction: float = 0.5) -> dict[str, Any]:
+        if folds < 2:
+            raise ValueError("folds must be >= 2")
+        if not 0 < min_train_fraction < 1:
+            raise ValueError("min_train_fraction must be in (0,1)")
+
+        returns = self.pnl.to_numpy(dtype=float)
+        n = returns.shape[0]
+        min_train = max(2, int(n * min_train_fraction))
+        test_block = max(1, (n - min_train) // folds)
+
+        segments: list[dict[str, Any]] = []
+        start = min_train
+        while start < n:
+            end = min(n, start + test_block)
+            train = returns[:start]
+            test = returns[start:end]
+            if test.shape[0] == 0:
+                break
+            segments.append(
+                {
+                    "train_range": [0, int(start - 1)],
+                    "test_range": [int(start), int(end - 1)],
+                    "train_metrics": self._compute_metrics(train),
+                    "test_metrics": self._compute_metrics(test),
+                    "expectancy_decay": float(self._compute_metrics(test)["expectancy"] - self._compute_metrics(train)["expectancy"]),
+                }
+            )
+            start = end
+
+        test_expectancies = np.asarray([s["test_metrics"]["expectancy"] for s in segments], dtype=float)
+        test_sharpes = np.asarray([s["test_metrics"]["sharpe"] for s in segments], dtype=float)
+
+        return {
+            "folds": segments,
+            "aggregate": {
+                "oos_expectancy_mean": float(np.mean(test_expectancies)) if segments else 0.0,
+                "oos_sharpe_mean": float(np.mean(test_sharpes)) if segments else 0.0,
+                "oos_expectancy_std": float(np.std(test_expectancies, ddof=1)) if len(segments) > 1 else 0.0,
+            },
+        }
+
+    def out_of_sample_test(self, holdout_fraction: float = 0.25) -> dict[str, Any]:
+        if not 0 < holdout_fraction < 1:
+            raise ValueError("holdout_fraction must be in (0, 1)")
+
+        returns = self.pnl.to_numpy(dtype=float)
+        split_idx = max(2, int(returns.shape[0] * (1 - holdout_fraction)))
+        train = returns[:split_idx]
+        test = returns[split_idx:]
+
+        train_metrics = self._compute_metrics(train)
+        test_metrics = self._compute_metrics(test)
+        return {
+            "split_index": int(split_idx),
+            "in_sample": train_metrics,
+            "out_of_sample": test_metrics,
+            "degradation": {
+                "expectancy": float(test_metrics["expectancy"] - train_metrics["expectancy"]),
+                "profit_factor": float(test_metrics["profit_factor"] - train_metrics["profit_factor"]) if np.isfinite(test_metrics["profit_factor"]) and np.isfinite(train_metrics["profit_factor"]) else float("nan"),
+                "sharpe": float(test_metrics["sharpe"] - train_metrics["sharpe"]),
+            },
+        }
+
+    def seed_variability_test(self, seeds: list[int] | None = None, iterations: int = 2000) -> dict[str, Any]:
+        if iterations <= 0:
+            raise ValueError("iterations must be > 0")
+        seed_list = seeds or [3, 7, 13, 29, 43, 101]
+        if not seed_list:
+            raise ValueError("seeds must be non-empty")
+
+        returns = self.pnl.to_numpy(dtype=float)
+        n = returns.shape[0]
+        summaries: list[dict[str, float]] = []
+
+        for seed in seed_list:
+            rng = np.random.default_rng(seed)
+            expectancy_values = np.empty(iterations, dtype=float)
+            for i in range(iterations):
+                sample = rng.choice(returns, size=n, replace=True)
+                expectancy_values[i] = float(np.mean(sample))
+
+            summaries.append(
+                {
+                    "seed": float(seed),
+                    "expectancy_mean": float(np.mean(expectancy_values)),
+                    "expectancy_std": float(np.std(expectancy_values, ddof=1)),
+                }
+            )
+
+        seed_means = np.asarray([s["expectancy_mean"] for s in summaries], dtype=float)
+        return {
+            "per_seed": summaries,
+            "stability": {
+                "mean_of_means": float(np.mean(seed_means)),
+                "std_of_means": float(np.std(seed_means, ddof=1)) if seed_means.shape[0] > 1 else 0.0,
+                "coefficient_of_variation": float(np.std(seed_means, ddof=1) / np.abs(np.mean(seed_means))) if seed_means.shape[0] > 1 and np.mean(seed_means) != 0 else 0.0,
+            },
+        }
+
+    def randomized_entry_timing_test(self, iterations: int = 3000, random_state: int = 17) -> dict[str, Any]:
+        """Random circular shifts to evaluate timing sensitivity without changing outcomes."""
+        if iterations <= 0:
+            raise ValueError("iterations must be > 0")
+
+        rng = np.random.default_rng(random_state)
+        returns = self.pnl.to_numpy(dtype=float)
+        n = returns.shape[0]
+
+        observed = self._compute_metrics(returns)
+        shifted_drawdowns = np.empty(iterations, dtype=float)
+
+        for i in range(iterations):
+            shift = int(rng.integers(0, n))
+            shifted = np.roll(returns, shift)
+            equity = self.initial_capital + np.cumsum(shifted)
+            peaks = np.maximum.accumulate(equity)
+            shifted_drawdowns[i] = float(np.max((peaks - equity) / peaks))
+
+        equity = self.initial_capital + np.cumsum(returns)
+        peaks = np.maximum.accumulate(equity)
+        observed_dd = float(np.max((peaks - equity) / peaks))
+
+        return {
+            "observed": {
+                "expectancy": observed["expectancy"],
+                "sharpe": observed["sharpe"],
+                "max_drawdown": observed_dd,
+            },
+            "randomized_timing": {
+                "max_drawdown_mean": float(np.mean(shifted_drawdowns)),
+                "max_drawdown_ci_95": [float(x) for x in np.percentile(shifted_drawdowns, [2.5, 97.5])],
+                "p_value_drawdown_better": float((np.sum(shifted_drawdowns <= observed_dd) + 1) / (iterations + 1)),
+            },
+        }
+
+    def simulation_independence_test(self, iterations: int = 3000, random_state: int = 19) -> dict[str, Any]:
+        if iterations <= 1:
+            raise ValueError("iterations must be > 1")
+
+        rng = np.random.default_rng(random_state)
+        returns = self.pnl.to_numpy(dtype=float)
+        n = returns.shape[0]
+
+        samples = np.empty((iterations, n), dtype=float)
+        signatures: set[bytes] = set()
+        for i in range(iterations):
+            sample = rng.choice(returns, size=n, replace=True)
+            samples[i] = sample
+            signatures.add(sample.tobytes())
+
+        expectancy_series = samples.mean(axis=1)
+        lag_corr = np.corrcoef(expectancy_series[:-1], expectancy_series[1:])[0, 1]
+
+        return {
+            "iterations": iterations,
+            "unique_path_ratio": float(len(signatures) / iterations),
+            "lag1_expectancy_correlation": float(lag_corr),
+        }
+
+    def full_robustness_report(self) -> dict[str, Any]:
+        return {
+            "baseline": {
+                "expectancy": self.expectancy(),
+                "profit_factor": self.profit_factor(),
+                "sharpe": self.sharpe_ratio(),
+                "trades": float(self.n_trades),
+            },
+            "shuffle_test": self.shuffle_test_returns(),
+            "bootstrap_real": self.bootstrap_resampling_real(),
+            "walk_forward": self.walk_forward_split(),
+            "out_of_sample": self.out_of_sample_test(),
+            "seed_variability": self.seed_variability_test(),
+            "randomized_timing": self.randomized_entry_timing_test(),
+            "simulation_independence": self.simulation_independence_test(),
+        }
