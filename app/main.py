@@ -9,6 +9,8 @@ from typing import Any
 
 from importlib import util as importlib_util
 from pathlib import Path
+
+from app.data.real_data_loader import load_real_market_data
 from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.high_vol_engine import HighVolEngine
 from app.trading.execution_metrics import compute_r_multiple
@@ -18,6 +20,10 @@ try:
     from tqdm import tqdm
 except Exception:  # pragma: no cover - optional dependency
     tqdm = None
+
+USE_REAL_DATA = True
+DEFAULT_REAL_DATA_CSV = Path("data/binance_klines.csv")
+ATR_WINDOW = 14
 
 
 def _load_breakout_strategy_config_class():
@@ -29,6 +35,7 @@ def _load_breakout_strategy_config_class():
     module = importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.BreakoutStrategyConfig
+
 
 @dataclass
 class Position:
@@ -46,7 +53,10 @@ class Position:
     trailing_stop_atr_multiplier: float
 
 
-def _compute_atr(high: list[float], low: list[float], close: list[float], period: int = 14) -> float | None:
+logger = get_logger(__name__)
+
+
+def _compute_atr(high: list[float], low: list[float], close: list[float], period: int = ATR_WINDOW) -> float | None:
     if len(close) <= period:
         return None
 
@@ -78,20 +88,47 @@ def _high_volatility_market_generator(initial_price: float):
     return next_price
 
 
-logger = get_logger(__name__)
+def _compute_max_drawdown(equity_curve: list[float]) -> float:
+    peak = float("-inf")
+    max_dd = 0.0
+    for value in equity_curve:
+        peak = max(peak, value)
+        max_dd = max(max_dd, peak - value)
+    return max_dd
 
 
-def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_price: float = 50000.0) -> dict[str, Any]:
-    price = initial_price
-    generator = _high_volatility_market_generator(initial_price)
+def _finalize_backtest_metrics(
+    r_multiples: list[float],
+    trade_logs: list[dict[str, float | int | str]],
+    equity_curve: list[float],
+) -> dict[str, Any]:
+    net_profit_r = sum(r_multiples)
+    wins = sum(1 for value in r_multiples if value > 0)
+    losses = sum(1 for value in r_multiples if value < 0)
+    gross_profit = sum(value for value in r_multiples if value > 0)
+    gross_loss = abs(sum(value for value in r_multiples if value < 0))
+    max_drawdown = _compute_max_drawdown(equity_curve)
 
-    close: list[float] = [price]
-    high: list[float] = [price]
-    low: list[float] = [price]
-    volume: list[float] = [1000.0]
+    return {
+        "trades": len(r_multiples),
+        "wins": wins,
+        "losses": losses,
+        "expectancy": mean(r_multiples) if r_multiples else 0.0,
+        "profit_factor": (gross_profit / gross_loss) if gross_loss else 0.0,
+        "net_profit_r": net_profit_r,
+        "max_drawdown": max_drawdown,
+        "r_distribution": r_multiples,
+        "trade_logs": trade_logs,
+    }
+
+
+def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, float]]) -> dict[str, Any]:
+    close: list[float] = []
+    high: list[float] = []
+    low: list[float] = []
+    volume: list[float] = []
     atr_series: list[float] = []
     true_ranges: list[float] = []
-    atr_window = 14
     rolling_tr_sum = 0.0
     equity_curve: list[float] = [0.0]
     cumulative_r = 0.0
@@ -100,28 +137,33 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
 
     active: Position | None = None
 
-    for tick in range(1, ticks + 1):
-        previous_price = price
-        price = generator(price)
-
-        candle_high = max(previous_price, price) * (1 + random.uniform(0.0005, 0.003))
-        candle_low = min(previous_price, price) * (1 - random.uniform(0.0005, 0.003))
-        candle_volume = max(100.0, 1000.0 + random.uniform(-250, 400) + abs(price - previous_price) * 0.4)
+    for tick, row in enumerate(rows, start=1):
+        price = float(row["close"])
+        candle_high = float(row["high"])
+        candle_low = float(row["low"])
+        candle_volume = float(row["volume"])
 
         close.append(price)
         high.append(candle_high)
         low.append(candle_low)
         volume.append(candle_volume)
 
-        tr = max(candle_high - candle_low, abs(candle_high - previous_price), abs(candle_low - previous_price))
-        true_ranges.append(tr)
-        if len(true_ranges) < atr_window:
+        if len(close) == 1:
             equity_curve.append(cumulative_r)
             continue
+
+        previous_price = close[-2]
+        tr = max(candle_high - candle_low, abs(candle_high - previous_price), abs(candle_low - previous_price))
+        true_ranges.append(tr)
+
+        if len(true_ranges) < ATR_WINDOW:
+            equity_curve.append(cumulative_r)
+            continue
+
         rolling_tr_sum += tr
-        if len(true_ranges) > atr_window:
-            rolling_tr_sum -= true_ranges[-(atr_window + 1)]
-        atr = rolling_tr_sum / atr_window
+        if len(true_ranges) > ATR_WINDOW:
+            rolling_tr_sum -= true_ranges[-(ATR_WINDOW + 1)]
+        atr = rolling_tr_sum / ATR_WINDOW
         atr_series.append(atr)
 
         market_data = {
@@ -219,33 +261,51 @@ def run_single_backtest(strategy: HighVolEngine, ticks: int = 1500, initial_pric
 
         equity_curve.append(cumulative_r)
 
-    net_profit_r = sum(r_multiples)
-    wins = sum(1 for value in r_multiples if value > 0)
-    losses = sum(1 for value in r_multiples if value < 0)
-    gross_profit = sum(value for value in r_multiples if value > 0)
-    gross_loss = abs(sum(value for value in r_multiples if value < 0))
-    max_drawdown = _compute_max_drawdown(equity_curve)
-
-    return {
-        "trades": len(r_multiples),
-        "wins": wins,
-        "losses": losses,
-        "expectancy": mean(r_multiples) if r_multiples else 0.0,
-        "profit_factor": (gross_profit / gross_loss) if gross_loss else 0.0,
-        "net_profit_r": net_profit_r,
-        "max_drawdown": max_drawdown,
-        "r_distribution": r_multiples,
-        "trade_logs": trade_logs,
-    }
+    return _finalize_backtest_metrics(r_multiples=r_multiples, trade_logs=trade_logs, equity_curve=equity_curve)
 
 
-def _compute_max_drawdown(equity_curve: list[float]) -> float:
-    peak = float("-inf")
-    max_dd = 0.0
-    for value in equity_curve:
-        peak = max(peak, value)
-        max_dd = max(max_dd, peak - value)
-    return max_dd
+def run_single_backtest(
+    strategy: HighVolEngine,
+    ticks: int = 1500,
+    initial_price: float = 50000.0,
+    market_df: Any = None,
+) -> dict[str, Any]:
+    if market_df is not None:
+        rows = [
+            {
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": float(row.volume),
+            }
+            for row in market_df.itertuples(index=False)
+        ]
+        return _backtest_from_ohlcv_rows(strategy=strategy, rows=rows)
+
+    price = initial_price
+    generator = _high_volatility_market_generator(initial_price)
+
+    rows: list[dict[str, float]] = []
+    for _ in range(1, ticks + 1):
+        previous_price = price
+        price = generator(price)
+
+        candle_high = max(previous_price, price) * (1 + random.uniform(0.0005, 0.003))
+        candle_low = min(previous_price, price) * (1 - random.uniform(0.0005, 0.003))
+        candle_volume = max(100.0, 1000.0 + random.uniform(-250, 400) + abs(price - previous_price) * 0.4)
+
+        rows.append(
+            {
+                "open": previous_price,
+                "high": candle_high,
+                "low": candle_low,
+                "close": price,
+                "volume": candle_volume,
+            }
+        )
+
+    return _backtest_from_ohlcv_rows(strategy=strategy, rows=rows)
 
 
 def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, Any]:
@@ -328,6 +388,13 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[index]
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 if __name__ == "__main__":
     configure_logging()
     logger = get_logger(__name__)
@@ -346,13 +413,37 @@ if __name__ == "__main__":
     strategy = BreakoutTrendStrategy(config=config)
     high_vol_engine = HighVolEngine(breakout_strategy=strategy)
 
-    runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
-    show_progress = os.getenv("MONTE_CARLO_PROGRESS", "0") == "1"
-    verbose_output = os.getenv("MONTE_CARLO_VERBOSE", "1") == "1"
-    start = time.time()
-    metrics = run_monte_carlo_profiled(strategy=high_vol_engine, runs=runs, progress=show_progress)
+    use_real_data = _env_flag("USE_REAL_DATA", USE_REAL_DATA)
 
-    if verbose_output:
-        logger.info("HIGH_VOL MVP metrics=%s", metrics)
+    if use_real_data:
+        logger.info("RUNNING IN REAL DATA MODE")
+        csv_path = Path(os.getenv("REAL_DATA_CSV_PATH", str(DEFAULT_REAL_DATA_CSV)))
+        market_df = load_real_market_data(csv_path)
+
+        start = time.time()
+        metrics = run_single_backtest(strategy=high_vol_engine, market_df=market_df)
+        elapsed = time.time() - start
+
+        total_trades = int(metrics["trades"])
+        wins = int(metrics["wins"])
+        winrate = (wins / total_trades) * 100 if total_trades else 0.0
+
+        logger.info("Total trades: %s", total_trades)
+        logger.info("Winrate real: %.2f%%", winrate)
+        logger.info("Profit factor real: %.4f", float(metrics["profit_factor"]))
+        logger.info("Max drawdown real: %.4fR", float(metrics["max_drawdown"]))
+        logger.info("Expectancy real: %.4fR", float(metrics["expectancy"]))
+        logger.info("Elapsed: %.2fs", elapsed)
+
         print(metrics)
-        print(f"Elapsed: {time.time() - start:.2f}s")
+    else:
+        runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
+        show_progress = os.getenv("MONTE_CARLO_PROGRESS", "0") == "1"
+        verbose_output = os.getenv("MONTE_CARLO_VERBOSE", "1") == "1"
+        start = time.time()
+        metrics = run_monte_carlo_profiled(strategy=high_vol_engine, runs=runs, progress=show_progress)
+
+        if verbose_output:
+            logger.info("HIGH_VOL MVP metrics=%s", metrics)
+            print(metrics)
+            print(f"Elapsed: {time.time() - start:.2f}s")
