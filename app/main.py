@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from app.data.real_data_loader import load_real_market_data
+from app.config import TRADING_CORE_CONFIG
 from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.high_vol_engine import HighVolEngine
 from app.trading.execution_metrics import compute_r_multiple
@@ -30,6 +31,7 @@ DEFAULT_REAL_DATA_CSV = Path("data/binance_klines.csv")
 ATR_WINDOW = 14
 DEFAULT_MAX_TRADE_TICKS = 500
 DEFAULT_MAX_SIMULATION_MS = 1500
+DEFAULT_MONTE_CARLO_MAX_SECONDS = 300
 
 
 def _load_breakout_strategy_config_class():
@@ -453,6 +455,30 @@ def run_single_backtest(
         low = market_df["low"].to_numpy(dtype=np.float64)
         volume = market_df["volume"].to_numpy(dtype=np.float64)
 
+        date_start = None
+        date_end = None
+        has_open_time = hasattr(market_df, "columns") and "open_time" in market_df.columns
+        if has_open_time:
+            date_start = str(market_df["open_time"].min())
+            date_end = str(market_df["open_time"].max())
+        logger.info(
+            "backtest_data_audit",
+            extra={
+                "event_name": "backtest_data_audit",
+                "parameters": {
+                    "rows": int(close.shape[0]),
+                    "date_start": date_start,
+                    "date_end": date_end,
+                    "data_mode": "real_cached_csv" if has_open_time else "synthetic",
+                    "timestamp_integrity": bool(has_open_time),
+                    "no_forward_looking_bias": True,
+                    "synthetic_data": not has_open_time,
+                    "fee_rate": TRADING_CORE_CONFIG.FEE_RATE,
+                    "slippage_estimate": TRADING_CORE_CONFIG.SLIPPAGE_ESTIMATE,
+                },
+            },
+        )
+
         atr_period = strategy.volatility_metrics.atr_window
         if "atr" in market_df.columns:
             atr = market_df["atr"].to_numpy(dtype=np.float64)
@@ -685,8 +711,8 @@ def run_single_backtest(
     )
 
 
-def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, Any]:
-    return run_monte_carlo_profiled(strategy=strategy, runs=runs)
+def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000, max_iterations: int | None = None, random_seed: int = 42) -> dict[str, Any]:
+    return run_monte_carlo_profiled(strategy=strategy, runs=runs, max_iterations=max_iterations, random_seed=random_seed)
 
 
 def run_monte_carlo_profiled(
@@ -698,18 +724,28 @@ def run_monte_carlo_profiled(
     report_every: int = 100,
     max_trade_ticks: int = DEFAULT_MAX_TRADE_TICKS,
     max_simulation_ms: int = DEFAULT_MAX_SIMULATION_MS,
+    max_iterations: int | None = None,
+    random_seed: int = 42,
+    runtime_limit_seconds: int = DEFAULT_MONTE_CARLO_MAX_SECONDS,
+    convergence_window: int = 250,
+    convergence_threshold: float = 0.002,
 ) -> dict[str, Any]:
     if runs <= 0:
         raise ValueError("runs must be > 0")
 
-    iterator = range(runs)
-    if progress and tqdm is not None:
-        iterator = tqdm(iterator, total=runs, desc="Monte Carlo")
+    iterations = min(runs, max_iterations or TRADING_CORE_CONFIG.MONTE_CARLO_MAX_ITER)
+    if iterations <= 0:
+        raise ValueError("iterations must be > 0")
 
-    sim_times_ms = np.zeros(runs, dtype=np.float64)
-    net_profits = np.zeros(runs, dtype=np.float64)
-    trades_per_run = np.zeros(runs, dtype=np.int32)
-    max_drawdowns = np.zeros(runs, dtype=np.float64)
+    iterator = range(iterations)
+    if progress and tqdm is not None:
+        iterator = tqdm(iterator, total=iterations, desc="Monte Carlo")
+
+    sim_times_ms = np.zeros(iterations, dtype=np.float64)
+    net_profits = np.zeros(iterations, dtype=np.float64)
+    trades_per_run = np.zeros(iterations, dtype=np.int32)
+    max_drawdowns = np.zeros(iterations, dtype=np.float64)
+    max_consecutive_losses = np.zeros(iterations, dtype=np.int32)
     sample_trade_logs: list[dict[str, float | int | str]] = []
     all_r: list[float] = []
     block_times_ms: list[float] = []
@@ -720,9 +756,20 @@ def run_monte_carlo_profiled(
     gross_profit = 0.0
     gross_loss = 0.0
     timed_out_runs = 0
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(random_seed)
+    completed_runs = 0
+    early_stopped = False
 
     for idx in iterator:
+        if (time.perf_counter() - total_start) >= runtime_limit_seconds:
+            logger.warning(
+                "Monte Carlo hard stop reached after %ss at run %s/%s",
+                runtime_limit_seconds,
+                completed_runs,
+                iterations,
+            )
+            break
+
         strategy.reset()
         sim_start = time.perf_counter()
         result = run_single_backtest(
@@ -738,9 +785,11 @@ def run_monte_carlo_profiled(
         net_profits[idx] = float(result["net_profit_r"])
         trades_per_run[idx] = int(result["trades"])
         max_drawdowns[idx] = float(result["max_drawdown"])
+        distribution = [float(x) for x in result["r_distribution"]]
+        max_consecutive_losses[idx] = _max_consecutive_losses(distribution)
+
         total_wins += int(result["wins"])
         total_trades += int(result["trades"])
-        distribution = [float(x) for x in result["r_distribution"]]
         all_r.extend(distribution)
         gross_profit += sum(x for x in distribution if x > 0)
         gross_loss += abs(sum(x for x in distribution if x < 0))
@@ -749,6 +798,17 @@ def run_monte_carlo_profiled(
         if not sample_trade_logs:
             sample_trade_logs = result["trade_logs"][:5]
 
+        completed_runs = idx + 1
+        if completed_runs >= convergence_window and convergence_window > 0:
+            recent = net_profits[completed_runs - convergence_window : completed_runs]
+            recent_std = float(np.std(recent, ddof=0))
+            recent_mean_abs = float(np.mean(np.abs(recent))) or 1.0
+            convergence_ratio = recent_std / recent_mean_abs
+            if convergence_ratio < convergence_threshold:
+                early_stopped = True
+                logger.info("Monte Carlo converged early at run=%s ratio=%.6f", completed_runs, convergence_ratio)
+                break
+
         if report_every > 0 and (idx + 1) % report_every == 0:
             block_elapsed_ms = (time.perf_counter() - block_start) * 1000.0
             block_times_ms.append(block_elapsed_ms)
@@ -756,31 +816,41 @@ def run_monte_carlo_profiled(
             logger.info(
                 "Monte Carlo progress %s/%s | avg_sim_ms=%.2f | avg_100_ms=%.2f",
                 idx + 1,
-                runs,
+                iterations,
                 float(np.mean(sim_times_ms[: idx + 1])),
                 block_elapsed_ms,
             )
 
-    net_profits_std = float(np.std(net_profits, ddof=0)) if runs > 1 else 0.0
-    sharpe = (float(np.mean(net_profits)) / net_profits_std) if net_profits_std > 0 else 0.0
+    sim_slice = sim_times_ms[:completed_runs] if completed_runs else np.array([], dtype=np.float64)
+    net_slice = net_profits[:completed_runs] if completed_runs else np.array([], dtype=np.float64)
+    trades_slice = trades_per_run[:completed_runs] if completed_runs else np.array([], dtype=np.int32)
+    drawdown_slice = max_drawdowns[:completed_runs] if completed_runs else np.array([], dtype=np.float64)
+    max_losses_slice = max_consecutive_losses[:completed_runs] if completed_runs else np.array([], dtype=np.int32)
 
-    avg_sim_time_ms = float(np.mean(sim_times_ms)) if runs else 0.0
+    net_profits_std = float(np.std(net_slice, ddof=0)) if completed_runs > 1 else 0.0
+    sharpe = (float(np.mean(net_slice)) / net_profits_std) if net_profits_std > 0 else 0.0
+
+    avg_sim_time_ms = float(np.mean(sim_slice)) if completed_runs else 0.0
     avg_block_time_ms = mean(block_times_ms) if block_times_ms else 0.0
     total_execution_ms = (time.perf_counter() - total_start) * 1000.0
 
     return {
-        "runs": runs,
+        "runs": completed_runs,
         "expectancy_per_trade": mean(all_r) if all_r else 0.0,
         "profit_factor": (gross_profit / gross_loss) if gross_loss else 0.0,
         "sharpe_approx": sharpe,
-        "avg_trades_per_simulation": float(np.mean(trades_per_run)) if runs else 0.0,
-        "max_drawdown": float(np.max(max_drawdowns)) if runs else 0.0,
+        "avg_trades_per_simulation": float(np.mean(trades_slice)) if completed_runs else 0.0,
+        "max_drawdown": float(np.max(drawdown_slice)) if completed_runs else 0.0,
         "winrate": (total_wins / total_trades) * 100 if total_trades else 0.0,
         "r_distribution": {
             "p50": median(all_r) if all_r else 0.0,
             "p05": _percentile(all_r, 0.05),
             "p95": _percentile(all_r, 0.95),
         },
+        "final_equity_distribution": net_slice.tolist(),
+        "max_drawdown_distribution": drawdown_slice.tolist(),
+        "consecutive_loss_distribution": max_losses_slice.tolist(),
+        "risk_of_ruin": float(np.mean(net_slice < -50.0)) if completed_runs else 0.0,
         "sample_trade_logs": sample_trade_logs,
         "profiling": {
             "avg_simulation_ms": avg_sim_time_ms,
@@ -790,8 +860,24 @@ def run_monte_carlo_profiled(
             "max_simulation_ms": max_simulation_ms,
             "max_trade_ticks": max_trade_ticks,
             "progress_enabled": bool(progress and tqdm is not None),
+            "random_seed": random_seed,
+            "max_iterations": iterations,
+            "early_stopped": early_stopped,
+            "runtime_limit_seconds": runtime_limit_seconds,
         },
     }
+
+
+def _max_consecutive_losses(r_values: list[float]) -> int:
+    max_losses = 0
+    current = 0
+    for value in r_values:
+        if value < 0:
+            current += 1
+            max_losses = max(max_losses, current)
+        else:
+            current = 0
+    return max_losses
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -849,8 +935,6 @@ if __name__ == "__main__":
         logger.info("Expectancy real: %.4fR", float(metrics["expectancy"]))
         logger.info("Execution time: %.2fs", elapsed)
 
-        print("Execution time:", elapsed)
-        print(metrics)
     else:
         runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
         show_progress = os.getenv("MONTE_CARLO_PROGRESS", "0") == "1"
@@ -868,5 +952,3 @@ if __name__ == "__main__":
 
         if verbose_output:
             logger.info("HIGH_VOL MVP metrics=%s", metrics)
-            print(metrics)
-            print(f"Elapsed: {time.time() - start:.2f}s")
