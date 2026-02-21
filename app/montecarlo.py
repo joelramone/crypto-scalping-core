@@ -4,6 +4,7 @@ import os
 import time
 from typing import Any
 
+from app.config import TRADING_CORE_CONFIG
 from app.main import (
     DEFAULT_MAX_SIMULATION_MS,
     DEFAULT_MAX_TRADE_TICKS,
@@ -18,7 +19,12 @@ from app.utils.logger import configure_logging, get_logger
 logger = get_logger(__name__)
 
 
-def run_monte_carlo_mvp(runs: int = 10_000, progress: bool = False) -> dict[str, Any]:
+def run_monte_carlo_mvp(
+    runs: int = 10_000,
+    progress: bool = False,
+    max_iterations: int = TRADING_CORE_CONFIG.MONTE_CARLO_MAX_ITER,
+    random_seed: int = 42,
+) -> dict[str, Any]:
     BreakoutStrategyConfig = _load_breakout_strategy_config_class()
     config = BreakoutStrategyConfig(
         lookback_period=int(os.getenv("BREAKOUT_LOOKBACK", "18")),
@@ -43,6 +49,8 @@ def run_monte_carlo_mvp(runs: int = 10_000, progress: bool = False) -> dict[str,
         report_every=100,
         max_trade_ticks=max_trade_ticks,
         max_simulation_ms=max_simulation_ms,
+        max_iterations=max_iterations,
+        random_seed=random_seed,
     )
 
 
@@ -50,12 +58,12 @@ if __name__ == "__main__":
     configure_logging()
     runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
     show_progress = _env_flag("MONTE_CARLO_PROGRESS", True)
+    max_iterations = int(os.getenv("MONTE_CARLO_MAX_ITER", str(TRADING_CORE_CONFIG.MONTE_CARLO_MAX_ITER)))
+    random_seed = int(os.getenv("MONTE_CARLO_SEED", "42"))
 
     start = time.perf_counter()
-    metrics = run_monte_carlo_mvp(runs=runs, progress=show_progress)
+    metrics = run_monte_carlo_mvp(runs=runs, progress=show_progress, max_iterations=max_iterations, random_seed=random_seed)
     elapsed = time.perf_counter() - start
 
-    logger.info("MONTE_CARLO metrics=%s", metrics)
-    logger.info("MONTE_CARLO total_execution_s=%.2f", elapsed)
-    print(metrics)
-    print(f"Elapsed: {elapsed:.2f}s")
+    logger.info("monte_carlo_metrics", extra={"event_name": "monte_carlo_metrics", "parameters": metrics})
+    logger.info("monte_carlo_execution", extra={"event_name": "monte_carlo_execution", "duration_s": elapsed})
