@@ -3,12 +3,16 @@ from __future__ import annotations
 import os
 import random
 import time
+from bisect import bisect_left, insort
+from collections import deque
 from dataclasses import dataclass
 from statistics import mean, median, pstdev
 from typing import Any
 
 from importlib import util as importlib_util
 from pathlib import Path
+
+import numpy as np
 
 from app.data.real_data_loader import load_real_market_data
 from app.strategies.breakout_trend import BreakoutTrendStrategy
@@ -120,6 +124,167 @@ def _finalize_backtest_metrics(
         "r_distribution": r_multiples,
         "trade_logs": trade_logs,
     }
+
+
+def _rolling_mean_np(values: np.ndarray, window: int) -> np.ndarray:
+    output = np.full(values.shape[0], np.nan, dtype=np.float64)
+    if values.shape[0] < window:
+        return output
+
+    cumsum = np.cumsum(values, dtype=np.float64)
+    output[window - 1 :] = (cumsum[window - 1 :] - np.concatenate(([0.0], cumsum[:-window]))) / float(window)
+    return output
+
+
+def _compute_atr_np(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    true_range = np.maximum.reduce([high - low, np.abs(high - prev_close), np.abs(low - prev_close)])
+    return _rolling_mean_np(true_range, period)
+
+
+def _compute_regime_score_series(
+    close: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    volume: np.ndarray,
+    atr: np.ndarray,
+    strategy: HighVolEngine,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    vm = strategy.volatility_metrics
+    sc = strategy.score_calculator
+    classifier = strategy.classifier
+
+    n = close.shape[0]
+    score_values = np.full(n, np.nan, dtype=np.float64)
+    regime_is_high = np.zeros(n, dtype=bool)
+
+    prev_close = np.roll(close, 1)
+    prev_close[0] = close[0]
+    returns = np.divide(close - prev_close, prev_close, out=np.zeros_like(close), where=prev_close != 0)
+    squared_returns = returns * returns
+    rv = np.sqrt(np.maximum(_rolling_mean_np(squared_returns[1:], vm.rv_window), 0.0))
+    rv_full = np.full(n, np.nan, dtype=np.float64)
+    rv_full[1:] = rv
+
+    ranges = high - low
+    range_mean = _rolling_mean_np(ranges, vm.range_window)
+    prev_range_mean = np.full(n, np.nan, dtype=np.float64)
+    for i in range((2 * vm.range_window) - 1, n):
+        prev_range_mean[i] = range_mean[i - vm.range_window]
+
+    atr_diff = np.abs(np.diff(atr, prepend=np.nan))
+    atr_diff[np.isnan(atr_diff)] = 0.0
+    vol_of_vol = _rolling_mean_np(atr_diff, vm.clustering_window)
+    clustering_baseline = _rolling_mean_np(np.nan_to_num(vol_of_vol, nan=0.0), vm.lookback_window)
+    volume_mean = _rolling_mean_np(volume, vm.volume_window)
+    baseline_volume = np.full(n, np.nan, dtype=np.float64)
+    for i in range((2 * vm.volume_window) - 1, n):
+        baseline_volume[i] = volume_mean[i - vm.volume_window]
+
+    atr_sorted: list[float] = []
+    rv_sorted: list[float] = []
+    atr_window_values: deque[float] = deque()
+    rv_window_values: deque[float] = deque()
+
+    min_required = max(vm.lookback_window + vm.atr_window, vm.rv_window + 1)
+
+    for i in range(n):
+        atr_value = atr[i]
+        rv_value = rv_full[i]
+
+        if not np.isnan(atr_value):
+            atr_window_values.append(float(atr_value))
+            insort(atr_sorted, float(atr_value))
+            if len(atr_window_values) > vm.lookback_window:
+                old_atr = atr_window_values.popleft()
+                atr_sorted.pop(bisect_left(atr_sorted, old_atr))
+
+        if not np.isnan(rv_value):
+            rv_window_values.append(float(rv_value))
+            insort(rv_sorted, float(rv_value))
+            if len(rv_window_values) > vm.lookback_window:
+                old_rv = rv_window_values.popleft()
+                rv_sorted.pop(bisect_left(rv_sorted, old_rv))
+
+        if i + 1 < min_required:
+            continue
+        if not atr_sorted or not rv_sorted or np.isnan(range_mean[i]) or np.isnan(prev_range_mean[i]):
+            continue
+        if np.isnan(vol_of_vol[i]) or np.isnan(volume_mean[i]) or np.isnan(baseline_volume[i]):
+            continue
+
+        atr_percentile = bisect_left(atr_sorted, float(atr_value)) + 1
+        atr_percentile /= len(atr_sorted)
+        rv_percentile = bisect_left(rv_sorted, float(rv_value)) + 1
+        rv_percentile /= len(rv_sorted)
+
+        range_to_mean_ratio = 0.0 if range_mean[i] == 0 else ranges[i] / range_mean[i]
+        range_expansion_ratio = 0.0 if prev_range_mean[i] == 0 else range_mean[i] / prev_range_mean[i]
+
+        clustering_den = clustering_baseline[i]
+        clustering_ratio = 0.0 if clustering_den == 0 or np.isnan(clustering_den) else vol_of_vol[i] / clustering_den
+
+        volume_expansion_ratio = 0.0 if baseline_volume[i] == 0 else volume_mean[i] / baseline_volume[i]
+
+        atr_signal = max(0.0, min(1.0, atr_percentile))
+        rv_signal = max(0.0, min(1.0, rv_percentile))
+        range_signal = max(0.0, min(1.0, 0.5 * range_expansion_ratio + 0.5 * range_to_mean_ratio - 1.0))
+        clustering_signal = max(0.0, min(1.0, clustering_ratio - 1.0))
+        volume_signal = max(0.0, min(1.0, volume_expansion_ratio - 1.0))
+
+        score = (
+            atr_signal * sc.weights["atr"]
+            + rv_signal * sc.weights["rv"]
+            + range_signal * sc.weights["range"]
+            + clustering_signal * sc.weights["clustering"]
+            + volume_signal * sc.weights["volume"]
+        )
+        active_count = sum(v >= 0.60 for v in (atr_signal, rv_signal, range_signal, clustering_signal, volume_signal))
+
+        score_values[i] = score
+        is_positive = (
+            score >= classifier.threshold
+            and active_count >= classifier.min_active_features
+            and volume_expansion_ratio >= classifier.min_volume_expansion_ratio
+        )
+        if is_positive:
+            classifier._positive_streak += 1
+        else:
+            classifier._positive_streak = 0
+
+        regime_is_high[i] = classifier._positive_streak >= classifier.confirmation_bars
+
+    classifier.reset()
+    return score_values, regime_is_high, rv_full
+
+
+def _rolling_prev_extrema(close: np.ndarray, window_size: int) -> tuple[np.ndarray, np.ndarray]:
+    n = close.shape[0]
+    prev_high = np.full(n, np.nan, dtype=np.float64)
+    prev_low = np.full(n, np.nan, dtype=np.float64)
+    max_deque: deque[int] = deque()
+    min_deque: deque[int] = deque()
+
+    for i in range(n):
+        while max_deque and max_deque[0] < i - window_size:
+            max_deque.popleft()
+        while min_deque and min_deque[0] < i - window_size:
+            min_deque.popleft()
+
+        if i > 0 and i >= window_size:
+            prev_high[i] = close[max_deque[0]]
+            prev_low[i] = close[min_deque[0]]
+
+        while max_deque and close[max_deque[-1]] <= close[i]:
+            max_deque.pop()
+        max_deque.append(i)
+
+        while min_deque and close[min_deque[-1]] >= close[i]:
+            min_deque.pop()
+        min_deque.append(i)
+
+    return prev_high, prev_low
 
 
 def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, float]]) -> dict[str, Any]:
@@ -271,17 +436,128 @@ def run_single_backtest(
     market_df: Any = None,
 ) -> dict[str, Any]:
     if market_df is not None:
-        rows = [
-            {
-                "open": float(row.open),
-                "high": float(row.high),
-                "low": float(row.low),
-                "close": float(row.close),
-                "volume": float(row.volume),
-            }
-            for row in market_df.itertuples(index=False)
-        ]
-        return _backtest_from_ohlcv_rows(strategy=strategy, rows=rows)
+        close = market_df["close"].to_numpy(dtype=np.float64)
+        high = market_df["high"].to_numpy(dtype=np.float64)
+        low = market_df["low"].to_numpy(dtype=np.float64)
+        volume = market_df["volume"].to_numpy(dtype=np.float64)
+
+        atr_period = strategy.volatility_metrics.atr_window
+        if "atr" in market_df.columns:
+            atr = market_df["atr"].to_numpy(dtype=np.float64)
+        else:
+            atr = _compute_atr_np(high=high, low=low, close=close, period=atr_period)
+
+        n = close.shape[0]
+        equity_curve = np.zeros(n, dtype=np.float64)
+        positions = np.zeros(n, dtype=np.int8)
+        score_values, regime_is_high, _ = _compute_regime_score_series(
+            close=close,
+            high=high,
+            low=low,
+            volume=volume,
+            atr=atr,
+            strategy=strategy,
+        )
+
+        lookback_period = int(getattr(strategy.breakout_strategy.config, "lookback_period", 20))
+        window_size = max(1, lookback_period - 1)
+        prev_window_high, prev_window_low = _rolling_prev_extrema(close, window_size)
+        breakout_buffer_atr = float(getattr(strategy.breakout_strategy.config, "breakout_buffer_atr", 0.0))
+
+        cumulative_r = 0.0
+        r_multiples: list[float] = []
+        trade_logs: list[dict[str, float | int | str]] = []
+        active: Position | None = None
+
+        start_index = max(lookback_period, atr_period, strategy.volatility_metrics.rv_window + 1)
+        for i in range(start_index, n):
+            price = close[i]
+            current_atr = atr[i]
+            if np.isnan(current_atr) or current_atr <= 0:
+                equity_curve[i] = cumulative_r
+                continue
+
+            if active is not None:
+                positions[i] = 1 if active.side == "LONG" else -1
+                if active.trailing_stop_enabled:
+                    trail_distance = current_atr * active.trailing_stop_atr_multiplier
+                    if active.side == "LONG":
+                        active.sl = max(active.sl, price - trail_distance)
+                    else:
+                        active.sl = min(active.sl, price + trail_distance)
+
+                hit_sl = (active.side == "LONG" and price <= active.sl) or (active.side == "SHORT" and price >= active.sl)
+                hit_tp = (active.side == "LONG" and price >= active.tp) or (active.side == "SHORT" and price <= active.tp)
+                if hit_sl or hit_tp:
+                    exit_reason = "TP" if hit_tp else "SL"
+                    exit_price = active.tp if hit_tp else active.sl
+                    r_multiple = compute_r_multiple(
+                        side=active.side,
+                        entry_price=active.entry,
+                        exit_price=exit_price,
+                        stop_price=active.initial_sl,
+                    )
+                    r_multiples.append(r_multiple)
+                    trade_payload = {
+                        "regime_score": active.regime_score,
+                        "atr": active.atr,
+                        "entry_price": active.entry,
+                        "stop": active.initial_sl,
+                        "target": active.tp,
+                        "risk_per_trade": active.risk_per_trade,
+                        "reward_per_trade": active.reward_per_trade,
+                        "r_multiple": r_multiple,
+                        "duration_ticks": i - active.opened_tick,
+                        "exit_reason": exit_reason,
+                    }
+                    trade_logs.append(trade_payload)
+                    strategy.record_trade_outcome(trade_payload)
+                    cumulative_r += r_multiple
+                    active = None
+
+            if active is None and regime_is_high[i] and i >= lookback_period:
+                buffer = current_atr * breakout_buffer_atr
+                window_high = prev_window_high[i]
+                window_low = prev_window_low[i]
+                if np.isnan(window_high) or np.isnan(window_low):
+                    equity_curve[i] = cumulative_r
+                    continue
+
+                signal_side = None
+                if price >= (window_high - buffer):
+                    signal_side = "LONG"
+                elif price <= (window_low + buffer):
+                    signal_side = "SHORT"
+
+                if signal_side is not None:
+                    signal = strategy.breakout_strategy._build_signal(side=signal_side, entry=float(price), atr_value=float(current_atr))
+                    entry_price = float(signal["entry"])
+                    stop_price = float(signal["sl"])
+                    target_price = float(signal["tp"])
+                    risk_per_trade = abs(entry_price - stop_price)
+                    reward_per_trade = abs(target_price - entry_price)
+                    active = Position(
+                        side=signal_side,
+                        entry=entry_price,
+                        sl=stop_price,
+                        tp=target_price,
+                        initial_sl=stop_price,
+                        risk_per_trade=risk_per_trade,
+                        reward_per_trade=reward_per_trade,
+                        opened_tick=i,
+                        regime_score=float(score_values[i]) if not np.isnan(score_values[i]) else 0.0,
+                        atr=float(current_atr),
+                        trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
+                        trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
+                    )
+
+            equity_curve[i] = cumulative_r
+
+        return _finalize_backtest_metrics(
+            r_multiples=r_multiples,
+            trade_logs=trade_logs,
+            equity_curve=equity_curve.tolist(),
+        )
 
     price = initial_price
     generator = _high_volatility_market_generator(initial_price)
@@ -433,8 +709,9 @@ if __name__ == "__main__":
         logger.info("Profit factor real: %.4f", float(metrics["profit_factor"]))
         logger.info("Max drawdown real: %.4fR", float(metrics["max_drawdown"]))
         logger.info("Expectancy real: %.4fR", float(metrics["expectancy"]))
-        logger.info("Elapsed: %.2fs", elapsed)
+        logger.info("Execution time: %.2fs", elapsed)
 
+        print("Execution time:", elapsed)
         print(metrics)
     else:
         runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
