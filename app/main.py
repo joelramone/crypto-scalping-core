@@ -715,6 +715,111 @@ def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000, max_iterations:
     return run_monte_carlo_profiled(strategy=strategy, runs=runs, max_iterations=max_iterations, random_seed=random_seed)
 
 
+def extract_trade_returns(
+    strategy: HighVolEngine,
+    ticks: int = 1500,
+    initial_price: float = 50000.0,
+    max_trade_ticks: int = DEFAULT_MAX_TRADE_TICKS,
+    max_simulation_ms: int = DEFAULT_MAX_SIMULATION_MS,
+    random_seed: int = 42,
+) -> list[float]:
+    """Run one backtest and return the trade R-multiple distribution."""
+    strategy.reset()
+    result = run_single_backtest(
+        strategy=strategy,
+        ticks=ticks,
+        initial_price=initial_price,
+        max_trade_ticks=max_trade_ticks,
+        max_simulation_ms=max_simulation_ms,
+        rng=np.random.default_rng(random_seed),
+    )
+    return [float(r_value) for r_value in result["r_distribution"]]
+
+
+def run_bootstrap_monte_carlo(
+    returns: list[float],
+    runs: int = 2000,
+    initial_capital: float = 100.0,
+    risk_per_trade: float = 0.01,
+    ruin_threshold_pct: float = 0.5,
+    random_seed: int = 42,
+) -> dict[str, Any]:
+    """Bootstrap Monte Carlo built from a fixed trade-return sample."""
+    if runs <= 0:
+        raise ValueError("runs must be > 0")
+    if initial_capital <= 0:
+        raise ValueError("initial_capital must be > 0")
+    if risk_per_trade <= 0:
+        raise ValueError("risk_per_trade must be > 0")
+    if not returns:
+        raise ValueError("returns must not be empty")
+
+    returns_array = np.asarray(returns, dtype=np.float64)
+    trades_per_run = returns_array.shape[0]
+
+    start_time = time.perf_counter()
+    rng = np.random.default_rng(random_seed)
+    sampled_returns = rng.choice(returns_array, size=(runs, trades_per_run), replace=True)
+
+    growth_factors = 1.0 + (sampled_returns * risk_per_trade)
+    equity_curves = initial_capital * np.cumprod(growth_factors, axis=1)
+    peak_equity = np.maximum.accumulate(equity_curves, axis=1)
+    drawdown_curves = np.divide(
+        peak_equity - equity_curves,
+        peak_equity,
+        out=np.zeros_like(equity_curves),
+        where=peak_equity > 0,
+    )
+
+    final_equity = equity_curves[:, -1]
+    max_drawdown = np.max(drawdown_curves, axis=1)
+
+    is_loss = sampled_returns < 0
+    trade_idx = np.arange(trades_per_run, dtype=np.int32)
+    last_non_loss_idx = np.maximum.accumulate(np.where(~is_loss, trade_idx, -1), axis=1)
+    loss_streaks = trade_idx - last_non_loss_idx
+    loss_streaks[~is_loss] = 0
+    max_consecutive_losses = np.max(loss_streaks, axis=1)
+
+    ruin_level = initial_capital * ruin_threshold_pct
+    ruined_runs = np.any(equity_curves <= ruin_level, axis=1)
+
+    execution_ms = (time.perf_counter() - start_time) * 1000.0
+
+    return {
+        "runs": runs,
+        "trades_per_run": trades_per_run,
+        "initial_capital": initial_capital,
+        "risk_per_trade": risk_per_trade,
+        "ruin_threshold_pct": ruin_threshold_pct,
+        "expectancy_per_trade": float(np.mean(returns_array)),
+        "final_equity": {
+            "mean": float(np.mean(final_equity)),
+            "median": float(np.median(final_equity)),
+            "p05": float(np.percentile(final_equity, 5)),
+            "p95": float(np.percentile(final_equity, 95)),
+            "distribution": final_equity.tolist(),
+        },
+        "max_drawdown": {
+            "mean": float(np.mean(max_drawdown)),
+            "median": float(np.median(max_drawdown)),
+            "p95": float(np.percentile(max_drawdown, 95)),
+            "distribution": max_drawdown.tolist(),
+        },
+        "max_consecutive_losses": {
+            "mean": float(np.mean(max_consecutive_losses)),
+            "median": float(np.median(max_consecutive_losses)),
+            "p95": float(np.percentile(max_consecutive_losses, 95)),
+            "distribution": max_consecutive_losses.astype(int).tolist(),
+        },
+        "risk_of_ruin": float(np.mean(ruined_runs)),
+        "profiling": {
+            "execution_ms": execution_ms,
+            "random_seed": random_seed,
+        },
+    }
+
+
 def run_monte_carlo_profiled(
     strategy: HighVolEngine,
     runs: int = 10_000,
