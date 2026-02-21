@@ -28,6 +28,8 @@ except Exception:  # pragma: no cover - optional dependency
 USE_REAL_DATA = True
 DEFAULT_REAL_DATA_CSV = Path("data/binance_klines.csv")
 ATR_WINDOW = 14
+DEFAULT_MAX_TRADE_TICKS = 500
+DEFAULT_MAX_SIMULATION_MS = 1500
 
 
 def _load_breakout_strategy_config_class():
@@ -434,7 +436,17 @@ def run_single_backtest(
     ticks: int = 1500,
     initial_price: float = 50000.0,
     market_df: Any = None,
+    max_trade_ticks: int = DEFAULT_MAX_TRADE_TICKS,
+    max_simulation_ms: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> dict[str, Any]:
+    sim_start = time.perf_counter()
+
+    def has_timed_out() -> bool:
+        if max_simulation_ms is None or max_simulation_ms <= 0:
+            return False
+        return (time.perf_counter() - sim_start) * 1000.0 >= max_simulation_ms
+
     if market_df is not None:
         close = market_df["close"].to_numpy(dtype=np.float64)
         high = market_df["high"].to_numpy(dtype=np.float64)
@@ -471,6 +483,32 @@ def run_single_backtest(
 
         start_index = max(lookback_period, atr_period, strategy.volatility_metrics.rv_window + 1)
         for i in range(start_index, n):
+            if i % 32 == 0 and has_timed_out():
+                if active is not None:
+                    r_multiple = compute_r_multiple(
+                        side=active.side,
+                        entry_price=active.entry,
+                        exit_price=float(close[i]),
+                        stop_price=active.initial_sl,
+                    )
+                    r_multiples.append(r_multiple)
+                    trade_payload = {
+                        "regime_score": active.regime_score,
+                        "atr": active.atr,
+                        "entry_price": active.entry,
+                        "stop": active.initial_sl,
+                        "target": active.tp,
+                        "risk_per_trade": active.risk_per_trade,
+                        "reward_per_trade": active.reward_per_trade,
+                        "r_multiple": r_multiple,
+                        "duration_ticks": i - active.opened_tick,
+                        "exit_reason": "SIM_TIMEOUT",
+                    }
+                    trade_logs.append(trade_payload)
+                    strategy.record_trade_outcome(trade_payload)
+                    cumulative_r += r_multiple
+                break
+
             price = close[i]
             current_atr = atr[i]
             if np.isnan(current_atr) or current_atr <= 0:
@@ -488,9 +526,10 @@ def run_single_backtest(
 
                 hit_sl = (active.side == "LONG" and price <= active.sl) or (active.side == "SHORT" and price >= active.sl)
                 hit_tp = (active.side == "LONG" and price >= active.tp) or (active.side == "SHORT" and price <= active.tp)
-                if hit_sl or hit_tp:
-                    exit_reason = "TP" if hit_tp else "SL"
-                    exit_price = active.tp if hit_tp else active.sl
+                max_tick_exit = (i - active.opened_tick) >= max_trade_ticks
+                if hit_sl or hit_tp or max_tick_exit:
+                    exit_reason = "TP" if hit_tp else ("SL" if hit_sl else "MAX_TICKS")
+                    exit_price = active.tp if hit_tp else (active.sl if hit_sl else float(price))
                     r_multiple = compute_r_multiple(
                         side=active.side,
                         entry_price=active.entry,
@@ -553,35 +592,97 @@ def run_single_backtest(
 
             equity_curve[i] = cumulative_r
 
+        if active is not None:
+            exit_price = float(close[-1])
+            r_multiple = compute_r_multiple(
+                side=active.side,
+                entry_price=active.entry,
+                exit_price=exit_price,
+                stop_price=active.initial_sl,
+            )
+            trade_payload = {
+                "regime_score": active.regime_score,
+                "atr": active.atr,
+                "entry_price": active.entry,
+                "stop": active.initial_sl,
+                "target": active.tp,
+                "risk_per_trade": active.risk_per_trade,
+                "reward_per_trade": active.reward_per_trade,
+                "r_multiple": r_multiple,
+                "duration_ticks": max(0, n - 1 - active.opened_tick),
+                "exit_reason": "FORCE_CLOSE_END",
+            }
+            r_multiples.append(r_multiple)
+            trade_logs.append(trade_payload)
+            strategy.record_trade_outcome(trade_payload)
+
         return _finalize_backtest_metrics(
             r_multiples=r_multiples,
             trade_logs=trade_logs,
             equity_curve=equity_curve.tolist(),
         )
 
-    price = initial_price
-    generator = _high_volatility_market_generator(initial_price)
+    if rng is None:
+        rng = np.random.default_rng()
 
-    rows: list[dict[str, float]] = []
-    for _ in range(1, ticks + 1):
-        previous_price = price
-        price = generator(price)
+    if ticks <= 0:
+        raise ValueError("ticks must be > 0")
 
-        candle_high = max(previous_price, price) * (1 + random.uniform(0.0005, 0.003))
-        candle_low = min(previous_price, price) * (1 - random.uniform(0.0005, 0.003))
-        candle_volume = max(100.0, 1000.0 + random.uniform(-250, 400) + abs(price - previous_price) * 0.4)
+    base_direction = rng.choice(np.array([-1.0, 1.0]))
+    direction_switches = rng.random(ticks) < 0.30
+    direction = base_direction * np.where(np.cumsum(direction_switches) % 2 == 0, 1.0, -1.0)
 
-        rows.append(
-            {
-                "open": previous_price,
-                "high": candle_high,
-                "low": candle_low,
-                "close": price,
-                "volume": candle_volume,
+    shocks = rng.uniform(0.002, 0.018, size=ticks)
+    random_component = rng.uniform(-0.012, 0.012, size=ticks)
+    pct_change = direction * shocks + random_component
+    multiplicative_returns = np.maximum(0.05, 1.0 + pct_change)
+
+    close = np.empty(ticks, dtype=np.float64)
+    close[0] = max(100.0, initial_price * multiplicative_returns[0])
+    if ticks > 1:
+        close[1:] = close[0] * np.cumprod(multiplicative_returns[1:])
+    close = np.maximum(100.0, close)
+
+    prev_close = np.empty(ticks, dtype=np.float64)
+    prev_close[0] = initial_price
+    if ticks > 1:
+        prev_close[1:] = close[:-1]
+
+    high_spread = rng.uniform(0.0005, 0.003, size=ticks)
+    low_spread = rng.uniform(0.0005, 0.003, size=ticks)
+    high = np.maximum(prev_close, close) * (1.0 + high_spread)
+    low = np.minimum(prev_close, close) * (1.0 - low_spread)
+    volume = np.maximum(100.0, 1000.0 + rng.uniform(-250.0, 400.0, size=ticks) + np.abs(close - prev_close) * 0.4)
+
+    class _SyntheticMarketData:
+        def __init__(self, close_values: np.ndarray, high_values: np.ndarray, low_values: np.ndarray, volume_values: np.ndarray):
+            self.columns = ("close", "high", "low", "volume")
+            self._mapping = {
+                "close": close_values,
+                "high": high_values,
+                "low": low_values,
+                "volume": volume_values,
             }
-        )
 
-    return _backtest_from_ohlcv_rows(strategy=strategy, rows=rows)
+        def __getitem__(self, key: str):
+            values = self._mapping[key]
+
+            class _ArrayColumn:
+                def __init__(self, array: np.ndarray):
+                    self._array = array
+
+                def to_numpy(self, dtype=np.float64):
+                    return self._array.astype(dtype, copy=False)
+
+            return _ArrayColumn(values)
+
+    synthetic_market = _SyntheticMarketData(close, high, low, volume)
+    return run_single_backtest(
+        strategy=strategy,
+        market_df=synthetic_market,
+        max_trade_ticks=max_trade_ticks,
+        max_simulation_ms=max_simulation_ms,
+    )
 
 
 def run_monte_carlo(strategy: HighVolEngine, runs: int = 10_000) -> dict[str, Any]:
@@ -595,6 +696,8 @@ def run_monte_carlo_profiled(
     initial_price: float = 50000.0,
     progress: bool = False,
     report_every: int = 100,
+    max_trade_ticks: int = DEFAULT_MAX_TRADE_TICKS,
+    max_simulation_ms: int = DEFAULT_MAX_SIMULATION_MS,
 ) -> dict[str, Any]:
     if runs <= 0:
         raise ValueError("runs must be > 0")
@@ -603,54 +706,89 @@ def run_monte_carlo_profiled(
     if progress and tqdm is not None:
         iterator = tqdm(iterator, total=runs, desc="Monte Carlo")
 
-    results: list[dict[str, Any]] = []
-    sim_times_ms: list[float] = []
+    sim_times_ms = np.zeros(runs, dtype=np.float64)
+    net_profits = np.zeros(runs, dtype=np.float64)
+    trades_per_run = np.zeros(runs, dtype=np.int32)
+    max_drawdowns = np.zeros(runs, dtype=np.float64)
+    sample_trade_logs: list[dict[str, float | int | str]] = []
+    all_r: list[float] = []
     block_times_ms: list[float] = []
     block_start = time.perf_counter()
+    total_start = time.perf_counter()
+    total_wins = 0
+    total_trades = 0
+    gross_profit = 0.0
+    gross_loss = 0.0
+    timed_out_runs = 0
+    rng = np.random.default_rng(42)
 
     for idx in iterator:
         strategy.reset()
         sim_start = time.perf_counter()
-        results.append(run_single_backtest(strategy=strategy, ticks=ticks, initial_price=initial_price))
-        sim_times_ms.append((time.perf_counter() - sim_start) * 1000.0)
+        result = run_single_backtest(
+            strategy=strategy,
+            ticks=ticks,
+            initial_price=initial_price,
+            max_trade_ticks=max_trade_ticks,
+            max_simulation_ms=max_simulation_ms,
+            rng=rng,
+        )
+        sim_elapsed_ms = (time.perf_counter() - sim_start) * 1000.0
+        sim_times_ms[idx] = sim_elapsed_ms
+        net_profits[idx] = float(result["net_profit_r"])
+        trades_per_run[idx] = int(result["trades"])
+        max_drawdowns[idx] = float(result["max_drawdown"])
+        total_wins += int(result["wins"])
+        total_trades += int(result["trades"])
+        distribution = [float(x) for x in result["r_distribution"]]
+        all_r.extend(distribution)
+        gross_profit += sum(x for x in distribution if x > 0)
+        gross_loss += abs(sum(x for x in distribution if x < 0))
+        if any(log.get("exit_reason") == "SIM_TIMEOUT" for log in result["trade_logs"]):
+            timed_out_runs += 1
+        if not sample_trade_logs:
+            sample_trade_logs = result["trade_logs"][:5]
 
         if report_every > 0 and (idx + 1) % report_every == 0:
             block_elapsed_ms = (time.perf_counter() - block_start) * 1000.0
             block_times_ms.append(block_elapsed_ms)
             block_start = time.perf_counter()
+            logger.info(
+                "Monte Carlo progress %s/%s | avg_sim_ms=%.2f | avg_100_ms=%.2f",
+                idx + 1,
+                runs,
+                float(np.mean(sim_times_ms[: idx + 1])),
+                block_elapsed_ms,
+            )
 
-    net_profits = [float(r["net_profit_r"]) for r in results]
-    trades_per_run = [int(r["trades"]) for r in results]
-    all_r = [item for r in results for item in r["r_distribution"]]
+    net_profits_std = float(np.std(net_profits, ddof=0)) if runs > 1 else 0.0
+    sharpe = (float(np.mean(net_profits)) / net_profits_std) if net_profits_std > 0 else 0.0
 
-    total_wins = sum(r["wins"] for r in results)
-    total_trades = sum(r["trades"] for r in results)
-    gross_profit = sum(sum(x for x in r["r_distribution"] if x > 0) for r in results)
-    gross_loss = abs(sum(sum(x for x in r["r_distribution"] if x < 0) for r in results))
-
-    net_profits_std = pstdev(net_profits) if len(net_profits) > 1 else 0.0
-    sharpe = (mean(net_profits) / net_profits_std) if net_profits_std > 0 else 0.0
-
-    avg_sim_time_ms = mean(sim_times_ms) if sim_times_ms else 0.0
+    avg_sim_time_ms = float(np.mean(sim_times_ms)) if runs else 0.0
     avg_block_time_ms = mean(block_times_ms) if block_times_ms else 0.0
+    total_execution_ms = (time.perf_counter() - total_start) * 1000.0
 
     return {
         "runs": runs,
         "expectancy_per_trade": mean(all_r) if all_r else 0.0,
         "profit_factor": (gross_profit / gross_loss) if gross_loss else 0.0,
         "sharpe_approx": sharpe,
-        "avg_trades_per_simulation": mean(trades_per_run) if trades_per_run else 0.0,
-        "max_drawdown": max((r["max_drawdown"] for r in results), default=0.0),
+        "avg_trades_per_simulation": float(np.mean(trades_per_run)) if runs else 0.0,
+        "max_drawdown": float(np.max(max_drawdowns)) if runs else 0.0,
         "winrate": (total_wins / total_trades) * 100 if total_trades else 0.0,
         "r_distribution": {
             "p50": median(all_r) if all_r else 0.0,
             "p05": _percentile(all_r, 0.05),
             "p95": _percentile(all_r, 0.95),
         },
-        "sample_trade_logs": results[0]["trade_logs"][:5] if results else [],
+        "sample_trade_logs": sample_trade_logs,
         "profiling": {
             "avg_simulation_ms": avg_sim_time_ms,
             "avg_time_per_100_sims_ms": avg_block_time_ms,
+            "total_execution_ms": total_execution_ms,
+            "timed_out_simulations": timed_out_runs,
+            "max_simulation_ms": max_simulation_ms,
+            "max_trade_ticks": max_trade_ticks,
             "progress_enabled": bool(progress and tqdm is not None),
         },
     }
@@ -717,8 +855,16 @@ if __name__ == "__main__":
         runs = int(os.getenv("MONTE_CARLO_SIMULATIONS", "10000"))
         show_progress = os.getenv("MONTE_CARLO_PROGRESS", "0") == "1"
         verbose_output = os.getenv("MONTE_CARLO_VERBOSE", "1") == "1"
+        max_trade_ticks = int(os.getenv("MONTE_CARLO_MAX_TRADE_TICKS", str(DEFAULT_MAX_TRADE_TICKS)))
+        max_simulation_ms = int(os.getenv("MONTE_CARLO_MAX_SIMULATION_MS", str(DEFAULT_MAX_SIMULATION_MS)))
         start = time.time()
-        metrics = run_monte_carlo_profiled(strategy=high_vol_engine, runs=runs, progress=show_progress)
+        metrics = run_monte_carlo_profiled(
+            strategy=high_vol_engine,
+            runs=runs,
+            progress=show_progress,
+            max_trade_ticks=max_trade_ticks,
+            max_simulation_ms=max_simulation_ms,
+        )
 
         if verbose_output:
             logger.info("HIGH_VOL MVP metrics=%s", metrics)
