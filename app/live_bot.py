@@ -3,12 +3,14 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 
 from binance.client import Client
-from binance.enums import SIDE_BUY, SIDE_SELL
 
 
 SYMBOL = "BTCUSDT"
+BASE_ASSET = "BTC"
+QUOTE_ASSET = "USDT"
 INTERVAL = Client.KLINE_INTERVAL_1MINUTE
 CANDLE_LIMIT = 100
 BREAKOUT_LOOKBACK = 20
@@ -19,6 +21,7 @@ TAKE_PROFIT_PCT = 0.006
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = 10
+MIN_BTC_POSITION = 0.0001
 
 
 api_key = os.getenv("BINANCE_API_KEY")
@@ -31,36 +34,56 @@ if not api_key or not api_secret:
 client = Client(api_key, api_secret)
 
 
-symbol_info = client.futures_exchange_info()
+def d(v) -> Decimal:
+    return Decimal(str(v))
+
+
+def round_down_to_step(value: float, step: float) -> float:
+    value_d = d(value)
+    step_d = d(step)
+    rounded = (value_d / step_d).to_integral_value(rounding=ROUND_DOWN) * step_d
+    return float(rounded)
+
+
+symbol_info = client.get_symbol_info(SYMBOL)
+if not symbol_info:
+    print(f"Could not load symbol info for {SYMBOL}")
+    sys.exit(1)
+
 price_tick = 0.0
 qty_step = 0.0
 min_qty = 0.0
 
-for s in symbol_info["symbols"]:
-    if s["symbol"] == SYMBOL:
-        for f in s["filters"]:
-            if f["filterType"] == "PRICE_FILTER":
-                price_tick = float(f["tickSize"])
-            elif f["filterType"] == "LOT_SIZE":
-                qty_step = float(f["stepSize"])
-                min_qty = float(f["minQty"])
-        break
+for flt in symbol_info["filters"]:
+    if flt["filterType"] == "PRICE_FILTER":
+        price_tick = float(flt["tickSize"])
+    elif flt["filterType"] == "LOT_SIZE":
+        qty_step = float(flt["stepSize"])
+        min_qty = float(flt["minQty"])
 
 if qty_step == 0.0 or price_tick == 0.0:
     print(f"Could not load symbol precision for {SYMBOL}")
     sys.exit(1)
 
 
-def floor_to_step(value: float, step: float) -> float:
-    return (value // step) * step
+def get_balances() -> tuple[float, float]:
+    usdt_balance = float(client.get_asset_balance(asset=QUOTE_ASSET)["free"])
+    btc_balance = float(client.get_asset_balance(asset=BASE_ASSET)["free"])
+    return usdt_balance, btc_balance
 
 
-def round_to_tick(value: float, tick: float) -> float:
-    return round(round(value / tick) * tick, 8)
+def get_open_orders_count() -> int:
+    return len(client.get_open_orders(symbol=SYMBOL))
+
+
+def is_in_position() -> bool:
+    _, btc_free = get_balances()
+    open_orders_count = get_open_orders_count()
+    return btc_free > MIN_BTC_POSITION or open_orders_count > 0
 
 
 def get_closed_candle_data():
-    klines = client.futures_klines(symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT)
+    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT)
     if len(klines) < BREAKOUT_LOOKBACK + 2:
         return None
 
@@ -83,33 +106,9 @@ def get_closed_candle_data():
     }
 
 
-def has_open_position() -> bool:
-    positions = client.futures_position_information(symbol=SYMBOL)
-    if not positions:
-        return False
-    amt = float(positions[0]["positionAmt"])
-    return abs(amt) > 0
-
-
-def get_position_amt() -> float:
-    positions = client.futures_position_information(symbol=SYMBOL)
-    if not positions:
-        return 0.0
-    return float(positions[0]["positionAmt"])
-
-
 def get_last_price() -> float:
-    ticker = client.futures_symbol_ticker(symbol=SYMBOL)
+    ticker = client.get_symbol_ticker(symbol=SYMBOL)
     return float(ticker["price"])
-
-
-def get_position_state() -> str:
-    position_amt = get_position_amt()
-    if position_amt > 0:
-        return "long"
-    if position_amt < 0:
-        return "short"
-    return "none"
 
 
 def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int):
@@ -121,14 +120,20 @@ def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row:
             last_closed_candle_ms / 1000, tz=timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    position = get_position_state()
+    usdt_free, btc_free = get_balances()
+    open_orders_count = get_open_orders_count()
+    in_position = btc_free > MIN_BTC_POSITION or open_orders_count > 0
+
     print(
         f"[{now_utc}] heartbeat: last_closed_candle={last_closed} "
-        f"position={position} trades_this_hour={trades_this_hour} losses_in_row={losses_in_row}"
+        f"usdt_free={usdt_free:.4f} btc_free={btc_free:.6f} "
+        f"in_position={in_position} open_orders={open_orders_count} "
+        f"trades_this_hour={trades_this_hour} consecutive_losses={losses_in_row}"
     )
 
 
 def place_trade():
+    usdt_before, _ = get_balances()
     entry_price = get_last_price()
     stop_price = entry_price * (1 - STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
@@ -141,47 +146,41 @@ def place_trade():
         return None
 
     raw_qty = risk_usdt / stop_distance
-    qty = floor_to_step(raw_qty, qty_step)
+    qty = round_down_to_step(raw_qty, qty_step)
 
     if qty < min_qty:
         print(f"Calculated qty {qty} is below minQty {min_qty}, skip trade.")
         return None
 
-    stop_price = round_to_tick(stop_price, price_tick)
-    take_profit_price = round_to_tick(take_profit_price, price_tick)
+    if qty * entry_price > usdt_before:
+        max_affordable_qty = round_down_to_step(usdt_before / entry_price, qty_step)
+        if max_affordable_qty < min_qty:
+            print("Insufficient USDT for minimum quantity, skip trade.")
+            return None
+        qty = max_affordable_qty
+
+    stop_price = round_down_to_step(stop_price, price_tick)
+    take_profit_price = round_down_to_step(take_profit_price, price_tick)
+    stop_limit_price = round_down_to_step(stop_price * 0.999, price_tick)
 
     print(
-        f"ENTRY SIGNAL -> entry={entry_price:.2f} qty={qty} stop={stop_price:.2f} tp={take_profit_price:.2f}"
+        f"ENTRY SIGNAL -> entry={entry_price:.2f} qty={qty} stop={stop_price:.2f} "
+        f"stop_limit={stop_limit_price:.2f} tp={take_profit_price:.2f}"
     )
 
-    entry_order = client.futures_create_order(
+    entry_order = client.order_market_buy(symbol=SYMBOL, quantity=qty)
+
+    client.create_oco_order(
         symbol=SYMBOL,
-        side=SIDE_BUY,
-        type="MARKET",
+        side="SELL",
         quantity=qty,
+        price=f"{take_profit_price:.8f}",
+        stopPrice=f"{stop_price:.8f}",
+        stopLimitPrice=f"{stop_limit_price:.8f}",
+        stopLimitTimeInForce="GTC",
     )
 
-    client.futures_create_order(
-        symbol=SYMBOL,
-        side=SIDE_SELL,
-        type="STOP_MARKET",
-        stopPrice=stop_price,
-        closePosition=True,
-        workingType="MARK_PRICE",
-        timeInForce="GTC",
-    )
-
-    client.futures_create_order(
-        symbol=SYMBOL,
-        side=SIDE_SELL,
-        type="TAKE_PROFIT_MARKET",
-        stopPrice=take_profit_price,
-        closePosition=True,
-        workingType="MARK_PRICE",
-        timeInForce="GTC",
-    )
-
-    print("Orders placed: MARKET + STOP_MARKET + TAKE_PROFIT_MARKET")
+    print("Orders placed: MARKET BUY + OCO SELL")
 
     return {
         "entry_order": entry_order,
@@ -190,21 +189,11 @@ def place_trade():
         "entry_price": entry_price,
         "stop_price": stop_price,
         "tp_price": take_profit_price,
+        "usdt_before": usdt_before,
     }
 
 
-def get_realized_pnl_since(start_ms: int) -> float:
-    incomes = client.futures_income_history(
-        symbol=SYMBOL,
-        incomeType="REALIZED_PNL",
-        startTime=start_ms,
-        limit=50,
-    )
-    pnl = sum(float(i["income"]) for i in incomes)
-    return pnl
-
-
-print("Starting BTCUSDT 1m breakout scalping bot...")
+print("Starting BTCUSDT 1m breakout scalping bot (SPOT)...")
 print(
     f"Capital={CAPITAL_USDT} USDT | Risk/trade={CAPITAL_USDT * RISK_PER_TRADE_PCT:.2f} USDT | "
     f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}%"
@@ -223,8 +212,12 @@ while True:
             trade_times.popleft()
 
         if active_trade:
-            if not has_open_position():
-                pnl = get_realized_pnl_since(active_trade["entry_time_ms"])
+            usdt_now, btc_now = get_balances()
+            open_orders_count = get_open_orders_count()
+            trade_closed = btc_now <= MIN_BTC_POSITION and open_orders_count == 0
+
+            if trade_closed:
+                pnl = usdt_now - active_trade["usdt_before"]
                 print(f"TRADE CLOSED -> PnL: {pnl:.4f} USDT")
 
                 if pnl < 0:
@@ -239,7 +232,7 @@ while True:
                     print("3 consecutive losses reached. Shutting down.")
                     break
             else:
-                print("Position still open. Waiting...")
+                print("Trade still active (balance/orders). Waiting...")
                 print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
                 time.sleep(POLL_SECONDS)
                 continue
@@ -276,7 +269,7 @@ while True:
             f"vol={candle['close_volume']:.2f} avg20vol={candle['avg_volume']:.2f}"
         )
 
-        if breakout and vol_ok and not has_open_position():
+        if breakout and vol_ok and not is_in_position():
             print("Signal confirmed: breakout + volume.")
             trade = place_trade()
             if trade:
@@ -284,7 +277,7 @@ while True:
                 active_trade = trade
                 print(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
         else:
-            print("No trade: conditions not met.")
+            print("No trade: conditions not met or already in position.")
 
         print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
         time.sleep(POLL_SECONDS)
