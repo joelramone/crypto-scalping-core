@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
 
 SYMBOL = "BTCUSDT"
@@ -32,6 +33,25 @@ if not api_key or not api_secret:
     sys.exit(1)
 
 client = Client(api_key, api_secret)
+
+
+def sync_time_offset():
+    server_ms = client.get_server_time()["serverTime"]
+    local_ms = int(time.time() * 1000)
+    offset = server_ms - local_ms
+    client.timestamp_offset = offset
+    print(f"Binance time offset synced: {offset} ms")
+
+
+def call_with_time_sync(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except BinanceAPIException as e:
+        if e.code == -1021:
+            print("Received -1021 timestamp error. Resyncing time and retrying once...")
+            sync_time_offset()
+            return fn(*args, **kwargs)
+        raise
 
 
 def d(v) -> Decimal:
@@ -67,13 +87,17 @@ if qty_step == 0.0 or price_tick == 0.0:
 
 
 def get_balances() -> tuple[float, float]:
-    usdt_balance = float(client.get_asset_balance(asset=QUOTE_ASSET)["free"])
-    btc_balance = float(client.get_asset_balance(asset=BASE_ASSET)["free"])
+    usdt_balance = float(
+        call_with_time_sync(client.get_asset_balance, asset=QUOTE_ASSET)["free"]
+    )
+    btc_balance = float(
+        call_with_time_sync(client.get_asset_balance, asset=BASE_ASSET)["free"]
+    )
     return usdt_balance, btc_balance
 
 
 def get_open_orders_count() -> int:
-    return len(client.get_open_orders(symbol=SYMBOL))
+    return len(call_with_time_sync(client.get_open_orders, symbol=SYMBOL))
 
 
 def is_in_position() -> bool:
@@ -168,9 +192,10 @@ def place_trade():
         f"stop_limit={stop_limit_price:.2f} tp={take_profit_price:.2f}"
     )
 
-    entry_order = client.order_market_buy(symbol=SYMBOL, quantity=qty)
+    entry_order = call_with_time_sync(client.order_market_buy, symbol=SYMBOL, quantity=qty)
 
-    client.create_oco_order(
+    call_with_time_sync(
+        client.create_oco_order,
         symbol=SYMBOL,
         side="SELL",
         quantity=qty,
@@ -194,6 +219,7 @@ def place_trade():
 
 
 print("Starting BTCUSDT 1m breakout scalping bot (SPOT)...")
+sync_time_offset()
 print(
     f"Capital={CAPITAL_USDT} USDT | Risk/trade={CAPITAL_USDT * RISK_PER_TRADE_PCT:.2f} USDT | "
     f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}%"
