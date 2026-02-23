@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 
 from binance.client import Client
 from binance.enums import SIDE_BUY, SIDE_SELL
@@ -101,6 +101,31 @@ def get_position_amt() -> float:
 def get_last_price() -> float:
     ticker = client.futures_symbol_ticker(symbol=SYMBOL)
     return float(ticker["price"])
+
+
+def get_position_state() -> str:
+    position_amt = get_position_amt()
+    if position_amt > 0:
+        return "long"
+    if position_amt < 0:
+        return "short"
+    return "none"
+
+
+def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int):
+    now_utc = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    if last_closed_candle_ms is None:
+        last_closed = "none"
+    else:
+        last_closed = datetime.fromtimestamp(
+            last_closed_candle_ms / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    position = get_position_state()
+    print(
+        f"[{now_utc}] heartbeat: last_closed_candle={last_closed} "
+        f"position={position} trades_this_hour={trades_this_hour} losses_in_row={losses_in_row}"
+    )
 
 
 def place_trade():
@@ -215,22 +240,26 @@ while True:
                     break
             else:
                 print("Position still open. Waiting...")
+                print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
                 time.sleep(POLL_SECONDS)
                 continue
 
         if len(trade_times) >= MAX_TRADES_PER_HOUR:
             print("Trade limit reached (3 per hour). Waiting...")
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
             time.sleep(POLL_SECONDS)
             continue
 
         candle = get_closed_candle_data()
         if candle is None:
             print("Not enough candle data yet.")
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
             time.sleep(POLL_SECONDS)
             continue
 
         if candle["close_time"] == last_processed_close_time:
             print("No new closed candle.")
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
             time.sleep(POLL_SECONDS)
             continue
 
@@ -239,7 +268,9 @@ while True:
         breakout = candle["close_price"] > candle["highest_high"]
         vol_ok = candle["close_volume"] > candle["avg_volume"]
 
-        candle_ts = datetime.utcfromtimestamp(candle["close_time"] / 1000).isoformat()
+        candle_ts = datetime.fromtimestamp(
+            candle["close_time"] / 1000, tz=timezone.utc
+        ).isoformat()
         print(
             f"{candle_ts} | close={candle['close_price']:.2f} high20={candle['highest_high']:.2f} "
             f"vol={candle['close_volume']:.2f} avg20vol={candle['avg_volume']:.2f}"
@@ -255,8 +286,10 @@ while True:
         else:
             print("No trade: conditions not met.")
 
+        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
         time.sleep(POLL_SECONDS)
 
     except Exception as e:
         print(f"Error: {e}")
+        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
         time.sleep(POLL_SECONDS)
