@@ -9,6 +9,9 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
 
+PAPER_MODE = True
+USE_TESTNET = True
+
 SYMBOL = "BTCUSDT"
 BASE_ASSET = "BTC"
 QUOTE_ASSET = "USDT"
@@ -32,7 +35,19 @@ if not api_key or not api_secret:
     print("Missing API keys. Set BINANCE_API_KEY and BINANCE_SECRET_KEY.")
     sys.exit(1)
 
-client = Client(api_key, api_secret, requests_params={"timeout": 10})
+if USE_TESTNET:
+    client = Client(api_key, api_secret)
+    client.API_URL = "https://testnet.binance.vision/api"
+else:
+    client = Client(api_key, api_secret)
+
+
+def get_mode_label() -> str:
+    if PAPER_MODE:
+        return "paper"
+    if USE_TESTNET:
+        return "testnet"
+    return "real"
 
 
 def call_api(label, fn, *args, **kwargs):
@@ -99,7 +114,14 @@ if qty_step == 0.0 or price_tick == 0.0:
     sys.exit(1)
 
 
-def get_balances() -> tuple[float, float]:
+paper_usdt_balance = CAPITAL_USDT
+
+
+def get_balances(active_trade=None) -> tuple[float, float]:
+    if PAPER_MODE:
+        btc_balance = active_trade["position_size"] if active_trade else 0.0
+        return paper_usdt_balance, btc_balance
+
     usdt_balance = float(
         call_with_time_sync("get_asset_balance(USDT)", client.get_asset_balance, asset=QUOTE_ASSET)["free"]
     )
@@ -110,10 +132,15 @@ def get_balances() -> tuple[float, float]:
 
 
 def get_open_orders_count() -> int:
+    if PAPER_MODE:
+        return 0
     return len(call_with_time_sync("get_open_orders", client.get_open_orders, symbol=SYMBOL))
 
 
-def is_in_position() -> bool:
+def is_in_position(active_trade=None) -> bool:
+    if PAPER_MODE:
+        return active_trade is not None
+
     _, btc_free = get_balances()
     open_orders_count = get_open_orders_count()
     return btc_free > MIN_BTC_POSITION or open_orders_count > 0
@@ -150,7 +177,7 @@ def get_last_price() -> float:
     return float(ticker["price"])
 
 
-def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int):
+def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int, active_trade=None):
     utc_now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if last_closed_candle_ms is None:
         last_closed = "none"
@@ -159,18 +186,19 @@ def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row:
             last_closed_candle_ms / 1000, tz=timezone.utc
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    usdt_free, btc_free = get_balances()
-    open_orders_count = get_open_orders_count()
-    in_position = btc_free > MIN_BTC_POSITION or open_orders_count > 0
+    usdt_free, btc_free = get_balances(active_trade)
+    in_position = is_in_position(active_trade)
 
     print(
-        f"[heartbeat] {utc_now_iso} last_closed={last_closed} "
-        f"in_position={in_position} trades_hour={trades_this_hour} losses={losses_in_row} "
-        f"usdt_free={usdt_free:.4f} btc_free={btc_free:.6f} open_orders={open_orders_count}"
+        f"[heartbeat] {utc_now_iso} last_closed={last_closed} mode={get_mode_label()} "
+        f"usdt_balance={usdt_free:.4f} btc_balance={btc_free:.6f} in_position={in_position} "
+        f"trades_this_hour={trades_this_hour} consecutive_losses={losses_in_row}"
     )
 
 
 def place_trade():
+    global paper_usdt_balance
+
     usdt_before, _ = get_balances()
     entry_price = get_last_price()
     stop_price = entry_price * (1 - STOP_PCT)
@@ -206,6 +234,27 @@ def place_trade():
         f"stop_limit={stop_limit_price:.2f} tp={take_profit_price:.2f}"
     )
 
+    if PAPER_MODE:
+        position_cost = qty * entry_price
+        if position_cost > paper_usdt_balance:
+            print("Insufficient paper USDT balance, skip trade.")
+            return None
+
+        paper_usdt_balance -= position_cost
+        print(
+            f"[PAPER ENTRY] entry={entry_price:.2f} qty={qty:.6f} stop={stop_price:.2f} "
+            f"tp={take_profit_price:.2f} paper_usdt_balance={paper_usdt_balance:.4f}"
+        )
+
+        return {
+            "entry_time_ms": int(time.time() * 1000),
+            "position_size": qty,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "take_profit_price": take_profit_price,
+            "usdt_before": usdt_before,
+        }
+
     entry_order = call_with_time_sync(
         "order_market_buy", client.order_market_buy, symbol=SYMBOL, quantity=qty
     )
@@ -238,7 +287,8 @@ def place_trade():
 print("Starting BTCUSDT 1m breakout scalping bot (SPOT)...")
 sync_time_offset()
 print(
-    f"Capital={CAPITAL_USDT} USDT | Risk/trade={CAPITAL_USDT * RISK_PER_TRADE_PCT:.2f} USDT | "
+    f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | "
+    f"Risk/trade={CAPITAL_USDT * RISK_PER_TRADE_PCT:.2f} USDT | "
     f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}%"
 )
 
@@ -255,47 +305,91 @@ while True:
             trade_times.popleft()
 
         if active_trade:
-            usdt_now, btc_now = get_balances()
-            open_orders_count = get_open_orders_count()
-            trade_closed = btc_now <= MIN_BTC_POSITION and open_orders_count == 0
+            if PAPER_MODE:
+                last_price = get_last_price()
+                exit_reason = None
+                exit_price = None
 
-            if trade_closed:
-                pnl = usdt_now - active_trade["usdt_before"]
-                print(f"TRADE CLOSED -> PnL: {pnl:.4f} USDT")
+                if last_price <= active_trade["stop_price"]:
+                    exit_reason = "LOSS"
+                    exit_price = active_trade["stop_price"]
+                elif last_price >= active_trade["take_profit_price"]:
+                    exit_reason = "WIN"
+                    exit_price = active_trade["take_profit_price"]
 
-                if pnl < 0:
-                    consecutive_losses += 1
-                    print(f"Consecutive losses: {consecutive_losses}")
+                if exit_reason:
+                    proceeds = active_trade["position_size"] * exit_price
+                    paper_usdt_balance += proceeds
+                    pnl = paper_usdt_balance - active_trade["usdt_before"]
+
+                    if exit_reason == "LOSS":
+                        consecutive_losses += 1
+                        print(
+                            f"[PAPER EXIT LOSS] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
+                            f"pnl={pnl:.4f} paper_usdt_balance={paper_usdt_balance:.4f}"
+                        )
+                    else:
+                        consecutive_losses = 0
+                        print(
+                            f"[PAPER EXIT WIN] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
+                            f"pnl={pnl:.4f} paper_usdt_balance={paper_usdt_balance:.4f}"
+                        )
+
+                    active_trade = None
+
+                    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                        print("3 consecutive losses reached. Shutting down.")
+                        break
                 else:
-                    consecutive_losses = 0
-
-                active_trade = None
-
-                if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                    print("3 consecutive losses reached. Shutting down.")
-                    break
+                    print(
+                        f"Paper trade still active. price={last_price:.2f} "
+                        f"stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
+                    )
+                    print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+                    time.sleep(POLL_SECONDS)
+                    continue
             else:
-                print("Trade still active (balance/orders). Waiting...")
-                print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
-                time.sleep(POLL_SECONDS)
-                continue
+                usdt_now, btc_now = get_balances()
+                open_orders_count = get_open_orders_count()
+                trade_closed = btc_now <= MIN_BTC_POSITION and open_orders_count == 0
+
+                if trade_closed:
+                    pnl = usdt_now - active_trade["usdt_before"]
+                    print(f"TRADE CLOSED -> PnL: {pnl:.4f} USDT")
+
+                    if pnl < 0:
+                        consecutive_losses += 1
+                        print(f"Consecutive losses: {consecutive_losses}")
+                    else:
+                        consecutive_losses = 0
+
+                    active_trade = None
+
+                    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                        print("3 consecutive losses reached. Shutting down.")
+                        break
+                else:
+                    print("Trade still active (balance/orders). Waiting...")
+                    print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+                    time.sleep(POLL_SECONDS)
+                    continue
 
         if len(trade_times) >= MAX_TRADES_PER_HOUR:
             print("Trade limit reached (3 per hour). Waiting...")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
             time.sleep(POLL_SECONDS)
             continue
 
         candle = get_closed_candle_data()
         if candle is None:
             print("Not enough candle data yet.")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
             time.sleep(POLL_SECONDS)
             continue
 
         if candle["close_time"] == last_processed_close_time:
             print("No new closed candle.")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
+            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
             time.sleep(POLL_SECONDS)
             continue
 
@@ -312,7 +406,7 @@ while True:
             f"vol={candle['close_volume']:.2f} avg20vol={candle['avg_volume']:.2f}"
         )
 
-        if breakout and vol_ok and not is_in_position():
+        if breakout and vol_ok and not is_in_position(active_trade):
             print("Signal confirmed: breakout + volume.")
             trade = place_trade()
             if trade:
@@ -322,10 +416,10 @@ while True:
         else:
             print("No trade: conditions not met or already in position.")
 
-        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
+        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
         time.sleep(POLL_SECONDS)
 
     except Exception as e:
         print(f"Error: {e}")
-        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses)
+        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
         time.sleep(POLL_SECONDS)
