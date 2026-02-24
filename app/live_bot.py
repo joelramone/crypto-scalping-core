@@ -11,13 +11,15 @@ from binance.exceptions import BinanceAPIException
 
 PAPER_MODE = True
 USE_TESTNET = True
+VALIDATION_MODE = True
 
 SYMBOL = "BTCUSDT"
 BASE_ASSET = "BTC"
 QUOTE_ASSET = "USDT"
 INTERVAL = Client.KLINE_INTERVAL_1MINUTE
 CANDLE_LIMIT = 100
-BREAKOUT_LOOKBACK = 20
+BREAKOUT_LOOKBACK = 10 if VALIDATION_MODE else 20
+VOLUME_LOOKBACK = 10 if VALIDATION_MODE else 20
 CAPITAL_USDT = 100.0
 RISK_PER_TRADE_PCT = 0.01
 STOP_PCT = 0.003
@@ -147,21 +149,23 @@ def is_in_position(active_trade=None) -> bool:
 
 
 def get_closed_candle_data():
+    max_lookback = max(BREAKOUT_LOOKBACK, VOLUME_LOOKBACK)
     klines = call_with_time_sync(
         "get_klines", client.get_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT
     )
-    if len(klines) < BREAKOUT_LOOKBACK + 2:
+    if len(klines) < max_lookback + 2:
         return None
 
     closed = klines[-2]
-    history = klines[-(BREAKOUT_LOOKBACK + 2):-2]
+    breakout_history = klines[-(BREAKOUT_LOOKBACK + 2):-2]
+    volume_history = klines[-(VOLUME_LOOKBACK + 2):-2]
 
     close_price = float(closed[4])
     close_volume = float(closed[5])
     close_time = int(closed[6])
 
-    highest_high = max(float(c[2]) for c in history)
-    avg_volume = sum(float(c[5]) for c in history) / len(history)
+    highest_high = max(float(c[2]) for c in breakout_history)
+    avg_volume = sum(float(c[5]) for c in volume_history) / len(volume_history)
 
     return {
         "close_time": close_time,
@@ -285,6 +289,8 @@ def place_trade():
 
 
 print("Starting BTCUSDT 1m breakout scalping bot (SPOT)...")
+if VALIDATION_MODE:
+    print("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
 sync_time_offset()
 print(
     f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | "
@@ -396,14 +402,14 @@ while True:
         last_processed_close_time = candle["close_time"]
 
         breakout = candle["close_price"] > candle["highest_high"]
-        vol_ok = candle["close_volume"] > candle["avg_volume"]
+        vol_ok = candle["close_volume"] >= candle["avg_volume"] * 1.0
 
         candle_ts = datetime.fromtimestamp(
             candle["close_time"] / 1000, tz=timezone.utc
         ).isoformat()
         print(
-            f"{candle_ts} | close={candle['close_price']:.2f} high20={candle['highest_high']:.2f} "
-            f"vol={candle['close_volume']:.2f} avg20vol={candle['avg_volume']:.2f}"
+            f"{candle_ts} | close={candle['close_price']:.2f} high{BREAKOUT_LOOKBACK}={candle['highest_high']:.2f} "
+            f"vol={candle['close_volume']:.2f} avgVol{VOLUME_LOOKBACK}={candle['avg_volume']:.2f}"
         )
 
         if breakout and vol_ok and not is_in_position(active_trade):
