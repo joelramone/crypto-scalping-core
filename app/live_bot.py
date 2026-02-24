@@ -32,25 +32,38 @@ if not api_key or not api_secret:
     print("Missing API keys. Set BINANCE_API_KEY and BINANCE_SECRET_KEY.")
     sys.exit(1)
 
-client = Client(api_key, api_secret)
+client = Client(api_key, api_secret, requests_params={"timeout": 10})
+
+
+def call_api(label, fn, *args, **kwargs):
+    start = time.time()
+    try:
+        res = fn(*args, **kwargs)
+        elapsed = time.time() - start
+        print(f"[api-ok] {label} {elapsed:.2f}s")
+        return res
+    except Exception as e:
+        elapsed = time.time() - start
+        print(f"[api-err] {label} {elapsed:.2f}s {type(e).__name__}: {e}")
+        raise
 
 
 def sync_time_offset():
-    server_ms = client.get_server_time()["serverTime"]
+    server_ms = call_api("get_server_time", client.get_server_time)["serverTime"]
     local_ms = int(time.time() * 1000)
     offset = server_ms - local_ms
     client.timestamp_offset = offset
     print(f"Binance time offset synced: {offset} ms")
 
 
-def call_with_time_sync(fn, *args, **kwargs):
+def call_with_time_sync(label, fn, *args, **kwargs):
     try:
-        return fn(*args, **kwargs)
+        return call_api(label, fn, *args, **kwargs)
     except BinanceAPIException as e:
         if e.code == -1021:
             print("Received -1021 timestamp error. Resyncing time and retrying once...")
             sync_time_offset()
-            return fn(*args, **kwargs)
+            return call_api(f"{label} (retry)", fn, *args, **kwargs)
         raise
 
 
@@ -65,7 +78,7 @@ def round_down_to_step(value: float, step: float) -> float:
     return float(rounded)
 
 
-symbol_info = client.get_symbol_info(SYMBOL)
+symbol_info = call_api("get_symbol_info", client.get_symbol_info, SYMBOL)
 if not symbol_info:
     print(f"Could not load symbol info for {SYMBOL}")
     sys.exit(1)
@@ -88,16 +101,16 @@ if qty_step == 0.0 or price_tick == 0.0:
 
 def get_balances() -> tuple[float, float]:
     usdt_balance = float(
-        call_with_time_sync(client.get_asset_balance, asset=QUOTE_ASSET)["free"]
+        call_with_time_sync("get_asset_balance(USDT)", client.get_asset_balance, asset=QUOTE_ASSET)["free"]
     )
     btc_balance = float(
-        call_with_time_sync(client.get_asset_balance, asset=BASE_ASSET)["free"]
+        call_with_time_sync("get_asset_balance(BTC)", client.get_asset_balance, asset=BASE_ASSET)["free"]
     )
     return usdt_balance, btc_balance
 
 
 def get_open_orders_count() -> int:
-    return len(call_with_time_sync(client.get_open_orders, symbol=SYMBOL))
+    return len(call_with_time_sync("get_open_orders", client.get_open_orders, symbol=SYMBOL))
 
 
 def is_in_position() -> bool:
@@ -107,7 +120,9 @@ def is_in_position() -> bool:
 
 
 def get_closed_candle_data():
-    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT)
+    klines = call_with_time_sync(
+        "get_klines", client.get_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT
+    )
     if len(klines) < BREAKOUT_LOOKBACK + 2:
         return None
 
@@ -131,12 +146,12 @@ def get_closed_candle_data():
 
 
 def get_last_price() -> float:
-    ticker = client.get_symbol_ticker(symbol=SYMBOL)
+    ticker = call_with_time_sync("get_symbol_ticker", client.get_symbol_ticker, symbol=SYMBOL)
     return float(ticker["price"])
 
 
 def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int):
-    now_utc = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    utc_now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if last_closed_candle_ms is None:
         last_closed = "none"
     else:
@@ -149,10 +164,9 @@ def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row:
     in_position = btc_free > MIN_BTC_POSITION or open_orders_count > 0
 
     print(
-        f"[{now_utc}] heartbeat: last_closed_candle={last_closed} "
-        f"usdt_free={usdt_free:.4f} btc_free={btc_free:.6f} "
-        f"in_position={in_position} open_orders={open_orders_count} "
-        f"trades_this_hour={trades_this_hour} consecutive_losses={losses_in_row}"
+        f"[heartbeat] {utc_now_iso} last_closed={last_closed} "
+        f"in_position={in_position} trades_hour={trades_this_hour} losses={losses_in_row} "
+        f"usdt_free={usdt_free:.4f} btc_free={btc_free:.6f} open_orders={open_orders_count}"
     )
 
 
@@ -192,9 +206,12 @@ def place_trade():
         f"stop_limit={stop_limit_price:.2f} tp={take_profit_price:.2f}"
     )
 
-    entry_order = call_with_time_sync(client.order_market_buy, symbol=SYMBOL, quantity=qty)
+    entry_order = call_with_time_sync(
+        "order_market_buy", client.order_market_buy, symbol=SYMBOL, quantity=qty
+    )
 
     call_with_time_sync(
+        "create_oco_order",
         client.create_oco_order,
         symbol=SYMBOL,
         side="SELL",
