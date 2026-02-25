@@ -28,6 +28,9 @@ MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = 10
 MIN_BTC_POSITION = 0.0001
+TAKER_FEE_RATE = 0.001
+MAKER_FEE_RATE = 0.001
+SIMULATED_SLIPPAGE = 0.0002
 
 
 api_key = os.getenv("BINANCE_API_KEY")
@@ -204,7 +207,8 @@ def place_trade():
     global paper_usdt_balance
 
     usdt_before, _ = get_balances()
-    entry_price = get_last_price()
+    close_price = get_last_price()
+    entry_price = close_price * (1 + SIMULATED_SLIPPAGE)
     stop_price = entry_price * (1 - STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
 
@@ -239,21 +243,26 @@ def place_trade():
     )
 
     if PAPER_MODE:
-        position_cost = qty * entry_price
-        if position_cost > paper_usdt_balance:
+        position_size_usdt = qty * entry_price
+        entry_fee = position_size_usdt * TAKER_FEE_RATE
+
+        if position_size_usdt + entry_fee > paper_usdt_balance:
             print("Insufficient paper USDT balance, skip trade.")
             return None
 
-        paper_usdt_balance -= position_cost
+        paper_usdt_balance -= entry_fee
         print(
-            f"[PAPER ENTRY] entry={entry_price:.2f} qty={qty:.6f} stop={stop_price:.2f} "
-            f"tp={take_profit_price:.2f} paper_usdt_balance={paper_usdt_balance:.4f}"
+            f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} "
+            f"position_size_usdt={position_size_usdt:.4f} entry_fee={entry_fee:.4f} "
+            f"stop={stop_price:.2f} tp={take_profit_price:.2f} paper_usdt_balance={paper_usdt_balance:.4f}"
         )
 
         return {
             "entry_time_ms": int(time.time() * 1000),
             "position_size": qty,
+            "position_size_usdt": position_size_usdt,
             "entry_price": entry_price,
+            "entry_fee": entry_fee,
             "stop_price": stop_price,
             "take_profit_price": take_profit_price,
             "usdt_before": usdt_before,
@@ -318,27 +327,31 @@ while True:
 
                 if last_price <= active_trade["stop_price"]:
                     exit_reason = "LOSS"
-                    exit_price = active_trade["stop_price"]
+                    exit_price = active_trade["stop_price"] * (1 - SIMULATED_SLIPPAGE)
                 elif last_price >= active_trade["take_profit_price"]:
                     exit_reason = "WIN"
-                    exit_price = active_trade["take_profit_price"]
+                    exit_price = active_trade["take_profit_price"] * (1 - SIMULATED_SLIPPAGE)
 
                 if exit_reason:
-                    proceeds = active_trade["position_size"] * exit_price
-                    paper_usdt_balance += proceeds
-                    pnl = paper_usdt_balance - active_trade["usdt_before"]
+                    gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"])
+                    exit_fee = active_trade["position_size_usdt"] * TAKER_FEE_RATE
+                    net_pnl = gross_pnl - active_trade["entry_fee"] - exit_fee
+                    paper_usdt_balance += net_pnl
+                    total_fees = active_trade["entry_fee"] + exit_fee
 
                     if exit_reason == "LOSS":
                         consecutive_losses += 1
                         print(
                             f"[PAPER EXIT LOSS] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
-                            f"pnl={pnl:.4f} paper_usdt_balance={paper_usdt_balance:.4f}"
+                            f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} "
+                            f"net_pnl={net_pnl:.4f} new_balance={paper_usdt_balance:.4f}"
                         )
                     else:
                         consecutive_losses = 0
                         print(
                             f"[PAPER EXIT WIN] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
-                            f"pnl={pnl:.4f} paper_usdt_balance={paper_usdt_balance:.4f}"
+                            f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} "
+                            f"net_pnl={net_pnl:.4f} new_balance={paper_usdt_balance:.4f}"
                         )
 
                     active_trade = None
