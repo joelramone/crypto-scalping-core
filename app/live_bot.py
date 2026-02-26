@@ -22,8 +22,8 @@ BREAKOUT_LOOKBACK = 10 if VALIDATION_MODE else 20
 VOLUME_LOOKBACK = 10 if VALIDATION_MODE else 20
 CAPITAL_USDT = 100.0
 RISK_PER_TRADE_PCT = 0.01
-STOP_PCT = 0.003
-TAKE_PROFIT_PCT = 0.006
+STOP_PCT = 0.004
+TAKE_PROFIT_PCT = 0.010
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = 10
@@ -212,15 +212,26 @@ def place_trade():
     stop_price = entry_price * (1 - STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
 
-    risk_usdt = CAPITAL_USDT * RISK_PER_TRADE_PCT
-    stop_distance = entry_price - stop_price
+    risk_per_trade_usdt = 1.0
+    position_size_usdt = risk_per_trade_usdt / STOP_PCT
 
-    if stop_distance <= 0:
-        print("Invalid stop distance, skip trade.")
+    if position_size_usdt <= 0:
+        print("Invalid position size, skip trade.")
         return None
 
-    raw_qty = risk_usdt / stop_distance
+    raw_qty = position_size_usdt / entry_price
     qty = round_down_to_step(raw_qty, qty_step)
+
+    fee_roundtrip_pct = TAKER_FEE_RATE * 2
+    slippage_assumption = SIMULATED_SLIPPAGE * 2
+    net_tp_pct = TAKE_PROFIT_PCT - fee_roundtrip_pct - slippage_assumption
+    net_sl_pct = STOP_PCT + fee_roundtrip_pct + slippage_assumption
+    print(
+        "[RR after costs] "
+        f"stop_pct={STOP_PCT:.6f} tp_pct={TAKE_PROFIT_PCT:.6f} "
+        f"taker_fee_rate*2={fee_roundtrip_pct:.6f} slippage_assumption={slippage_assumption:.6f} "
+        f"estimated_net_tp_pct={net_tp_pct:.6f} estimated_net_sl_pct={net_sl_pct:.6f}"
+    )
 
     if qty < min_qty:
         print(f"Calculated qty {qty} is below minQty {min_qty}, skip trade.")
