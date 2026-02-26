@@ -258,7 +258,8 @@ def place_trade():
         print("STOP_PCT must be > 0.")
         return None
 
-    position_notional_usdt = risk_per_trade_usdt / STOP_PCT
+    effective_leverage = max(FUTURES_LEVERAGE, 1)
+    position_notional_usdt = risk_per_trade_usdt / (STOP_PCT * effective_leverage)
     raw_qty = position_notional_usdt / entry_price
     qty = round_down_to_step(raw_qty, qty_step)
 
@@ -273,18 +274,34 @@ def place_trade():
         print(f"Calculated notional {qty * entry_price:.4f} below minNotional {min_notional:.4f}, skip trade.")
         return None
 
-    margin_required = (qty * entry_price) / max(FUTURES_LEVERAGE, 1)
+    margin_required = (qty * entry_price) / effective_leverage
     if margin_required > usdt_before:
-        max_qty = round_down_to_step((usdt_before * FUTURES_LEVERAGE) / entry_price, qty_step)
+        max_qty = round_down_to_step((usdt_before * effective_leverage) / entry_price, qty_step)
         if max_qty < min_qty:
             print("Insufficient USDT margin for minimum quantity, skip trade.")
             return None
         qty = max_qty
 
     notional = qty * entry_price
+    margin_required = notional / effective_leverage
+    if margin_required > usdt_before:
+        print(
+            f"Insufficient USDT margin after sizing. required={margin_required:.4f} available={usdt_before:.4f}, skip trade."
+        )
+        return None
+
+    estimated_loss_if_stop = notional * STOP_PCT * effective_leverage
+    print(
+        "Risk sizing -> "
+        f"risk_per_trade={risk_per_trade_usdt:.4f} "
+        f"leverage={effective_leverage} "
+        f"stop_pct={STOP_PCT:.6f} "
+        f"calculated_notional={notional:.4f} "
+        f"estimated_loss_if_stop={estimated_loss_if_stop:.4f}"
+    )
     print(
         f"ENTRY SIGNAL -> entry={entry_price:.2f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
-        f"qty={qty:.6f} notional={notional:.2f}"
+        f"qty={qty:.6f} notional={notional:.2f} margin_required={margin_required:.4f}"
     )
 
     if PAPER_MODE:
