@@ -27,8 +27,8 @@ BREAKOUT_LOOKBACK = 10 if VALIDATION_MODE else 20
 VOLUME_LOOKBACK = 10 if VALIDATION_MODE else 20
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 risk_per_trade_usdt = float(os.getenv("RISK_PER_TRADE_USDT", "1.0"))
-STOP_PCT = float(os.getenv("STOP_PCT", "0.003"))
-TP_PCT = float(os.getenv("TP_PCT", "0.006"))
+STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.012")))
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "10"))
@@ -252,14 +252,18 @@ def place_trade():
     close_price = get_last_price()
     entry_price = close_price * (1 + SIMULATED_SLIPPAGE)
     stop_price = entry_price * (1 - STOP_PCT)
-    take_profit_price = entry_price * (1 + TP_PCT)
+    take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
 
     if STOP_PCT <= 0:
         print("STOP_PCT must be > 0.")
         return None
 
-    effective_leverage = max(FUTURES_LEVERAGE, 1)
-    position_notional_usdt = risk_per_trade_usdt / (STOP_PCT * effective_leverage)
+    if FUTURES_LEVERAGE <= 0:
+        print("FUTURES_LEVERAGE must be > 0.")
+        return None
+
+    effective_leverage = FUTURES_LEVERAGE
+    position_notional_usdt = risk_per_trade_usdt / (STOP_PCT * FUTURES_LEVERAGE)
     raw_qty = position_notional_usdt / entry_price
     qty = round_down_to_step(raw_qty, qty_step)
 
@@ -290,7 +294,10 @@ def place_trade():
         )
         return None
 
-    estimated_loss_if_stop = notional * STOP_PCT * effective_leverage
+    estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
+    estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
+    estimated_loss_if_stop = (notional * STOP_PCT) + estimated_entry_fee + estimated_exit_fee
+    estimated_profit_if_tp = (notional * TAKE_PROFIT_PCT) - estimated_entry_fee - estimated_exit_fee
     print(
         "Risk sizing -> "
         f"risk_per_trade={risk_per_trade_usdt:.4f} "
@@ -305,7 +312,7 @@ def place_trade():
     )
 
     if PAPER_MODE:
-        entry_fee = notional * FUTURES_TAKER_FEE_RATE
+        entry_fee = estimated_entry_fee
         if entry_fee > paper_usdt_balance:
             print("Insufficient paper USDT balance for entry fee, skip trade.")
             return None
@@ -315,6 +322,13 @@ def place_trade():
             f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} "
             f"notional={notional:.4f} entry_fee={entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
             f"paper_usdt_balance={paper_usdt_balance:.4f}"
+        )
+        print(
+            "[ENTRY ESTIMATE] "
+            f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
+            f"qty={qty:.6f} notional_usdt={notional:.4f} "
+            f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
+            f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
         )
 
         return {
@@ -362,6 +376,13 @@ def place_trade():
     )
 
     print("Orders placed: MARKET BUY + STOP_MARKET + TAKE_PROFIT_MARKET")
+    print(
+        "[ENTRY ESTIMATE] "
+        f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
+        f"qty={qty:.6f} notional_usdt={notional:.4f} "
+        f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
+        f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
+    )
 
     return {
         "entry_order": entry_order,
@@ -381,7 +402,7 @@ sync_time_offset()
 ensure_futures_settings()
 print(
     f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | Risk/trade={risk_per_trade_usdt:.2f} USDT | "
-    f"SL={STOP_PCT * 100:.2f}% | TP={TP_PCT * 100:.2f}% | leverage={FUTURES_LEVERAGE}x | margin={MARGIN_TYPE}"
+    f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}% | leverage={FUTURES_LEVERAGE}x | margin={MARGIN_TYPE}"
 )
 
 last_processed_close_time = None
