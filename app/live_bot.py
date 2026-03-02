@@ -25,6 +25,11 @@ INTERVAL = Client.KLINE_INTERVAL_1MINUTE
 CANDLE_LIMIT = 100
 BREAKOUT_LOOKBACK = 10 if VALIDATION_MODE else 20
 VOLUME_LOOKBACK = 10 if VALIDATION_MODE else 20
+LOOKBACK = BREAKOUT_LOOKBACK
+TREND_TIMEFRAME = "15m"
+EMA_FAST = 50
+EMA_SLOW = 200
+VOLUME_MULTIPLIER = 1.8
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 risk_per_trade_usdt = float(os.getenv("RISK_PER_TRADE_USDT", "1.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
@@ -188,11 +193,63 @@ def get_open_orders_count() -> int:
 def is_in_position(active_trade=None) -> bool:
     if PAPER_MODE:
         return active_trade is not None
-    return get_position_amt() > 0
+    return abs(get_position_amt()) > 0
+
+
+def calculate_ema(prices, period: int):
+    if len(prices) < period:
+        return None
+    multiplier = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
+
+
+last_trend_close_time = None
+last_trend_value = "FLAT"
+last_trend_ema_fast = None
+last_trend_ema_slow = None
+
+
+def get_trend_state():
+    global last_trend_close_time, last_trend_value, last_trend_ema_fast, last_trend_ema_slow
+
+    klines = call_with_time_sync(
+        "futures_klines(trend)",
+        client.futures_klines,
+        symbol=SYMBOL,
+        interval=TREND_TIMEFRAME,
+        limit=300,
+    )
+    if len(klines) < EMA_SLOW + 2:
+        return last_trend_value, last_trend_ema_fast, last_trend_ema_slow
+
+    latest_closed = klines[-2]
+    latest_closed_time = int(latest_closed[6])
+    if last_trend_close_time == latest_closed_time:
+        return last_trend_value, last_trend_ema_fast, last_trend_ema_slow
+
+    closes = [float(k[4]) for k in klines[:-1]]
+    ema_fast = calculate_ema(closes, EMA_FAST)
+    ema_slow = calculate_ema(closes, EMA_SLOW)
+
+    trend = "FLAT"
+    if ema_fast is not None and ema_slow is not None:
+        if ema_fast > ema_slow:
+            trend = "BULL"
+        elif ema_fast < ema_slow:
+            trend = "BEAR"
+
+    last_trend_close_time = latest_closed_time
+    last_trend_value = trend
+    last_trend_ema_fast = ema_fast
+    last_trend_ema_slow = ema_slow
+    return trend, ema_fast, ema_slow
 
 
 def get_closed_candle_data():
-    max_lookback = max(BREAKOUT_LOOKBACK, VOLUME_LOOKBACK)
+    max_lookback = max(LOOKBACK, VOLUME_LOOKBACK)
     klines = call_with_time_sync(
         "futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT
     )
@@ -200,7 +257,7 @@ def get_closed_candle_data():
         return None
 
     closed = klines[-2]
-    breakout_history = klines[-(BREAKOUT_LOOKBACK + 2):-2]
+    breakout_history = klines[-(LOOKBACK + 2):-2]
     volume_history = klines[-(VOLUME_LOOKBACK + 2):-2]
 
     close_price = float(closed[4])
@@ -208,6 +265,7 @@ def get_closed_candle_data():
     close_time = int(closed[6])
 
     highest_high = max(float(c[2]) for c in breakout_history)
+    lowest_low = min(float(c[3]) for c in breakout_history)
     avg_volume = sum(float(c[5]) for c in volume_history) / len(volume_history)
 
     return {
@@ -215,6 +273,7 @@ def get_closed_candle_data():
         "close_price": close_price,
         "close_volume": close_volume,
         "highest_high": highest_high,
+        "lowest_low": lowest_low,
         "avg_volume": avg_volume,
     }
 
@@ -245,14 +304,15 @@ def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row:
     )
 
 
-def place_trade():
+def place_trade(side: str):
     global paper_usdt_balance
 
     usdt_before = get_usdt_balance()
     close_price = get_last_price()
-    entry_price = close_price * (1 + SIMULATED_SLIPPAGE)
-    stop_price = entry_price * (1 - STOP_PCT)
-    take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT)
+    is_long = side == "LONG"
+    entry_price = close_price * (1 + SIMULATED_SLIPPAGE) if is_long else close_price * (1 - SIMULATED_SLIPPAGE)
+    stop_price = entry_price * (1 - STOP_PCT) if is_long else entry_price * (1 + STOP_PCT)
+    take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT) if is_long else entry_price * (1 - TAKE_PROFIT_PCT)
 
     if STOP_PCT <= 0:
         print("STOP_PCT must be > 0.")
@@ -320,11 +380,12 @@ def place_trade():
         paper_usdt_balance -= entry_fee
         print(
             f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} "
-            f"notional={notional:.4f} entry_fee={entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
+            f"side={side} notional={notional:.4f} entry_fee={entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
             f"paper_usdt_balance={paper_usdt_balance:.4f}"
         )
         print(
             "[ENTRY ESTIMATE] "
+            f"side={side} leverage={effective_leverage} "
             f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
             f"qty={qty:.6f} notional_usdt={notional:.4f} "
             f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
@@ -335,6 +396,7 @@ def place_trade():
             "entry_time_ms": int(time.time() * 1000),
             "position_size": qty,
             "position_notional": notional,
+            "side": side,
             "entry_price": entry_price,
             "entry_fee": entry_fee,
             "stop_price": stop_price,
@@ -346,7 +408,7 @@ def place_trade():
         "futures_create_order(MARKET)",
         client.futures_create_order,
         symbol=SYMBOL,
-        side="BUY",
+        side="BUY" if is_long else "SELL",
         type="MARKET",
         quantity=qty,
     )
@@ -355,7 +417,7 @@ def place_trade():
         "futures_create_order(STOP_MARKET)",
         client.futures_create_order,
         symbol=SYMBOL,
-        side="SELL",
+        side="SELL" if is_long else "BUY",
         type="STOP_MARKET",
         stopPrice=f"{stop_price:.8f}",
         quantity=qty,
@@ -367,7 +429,7 @@ def place_trade():
         "futures_create_order(TAKE_PROFIT_MARKET)",
         client.futures_create_order,
         symbol=SYMBOL,
-        side="SELL",
+        side="SELL" if is_long else "BUY",
         type="TAKE_PROFIT_MARKET",
         stopPrice=f"{take_profit_price:.8f}",
         quantity=qty,
@@ -375,9 +437,10 @@ def place_trade():
         workingType=WORKING_TYPE,
     )
 
-    print("Orders placed: MARKET BUY + STOP_MARKET + TAKE_PROFIT_MARKET")
+    print(f"Orders placed: MARKET {'BUY' if is_long else 'SELL'} + STOP_MARKET + TAKE_PROFIT_MARKET")
     print(
         "[ENTRY ESTIMATE] "
+        f"side={side} leverage={effective_leverage} "
         f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
         f"qty={qty:.6f} notional_usdt={notional:.4f} "
         f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
@@ -388,6 +451,7 @@ def place_trade():
         "entry_order": entry_order,
         "entry_time_ms": int(time.time() * 1000),
         "qty": qty,
+        "side": side,
         "entry_price": entry_price,
         "stop_price": stop_price,
         "tp_price": take_profit_price,
@@ -424,14 +488,27 @@ while True:
                 exit_price = None
 
                 if last_price <= active_trade["stop_price"]:
-                    exit_reason = "LOSS"
-                    exit_price = active_trade["stop_price"] * (1 - SIMULATED_SLIPPAGE)
+                    if active_trade["side"] == "LONG":
+                        exit_reason = "LOSS"
+                        exit_price = active_trade["stop_price"] * (1 - SIMULATED_SLIPPAGE)
                 elif last_price >= active_trade["take_profit_price"]:
-                    exit_reason = "WIN"
-                    exit_price = active_trade["take_profit_price"] * (1 - SIMULATED_SLIPPAGE)
+                    if active_trade["side"] == "LONG":
+                        exit_reason = "WIN"
+                        exit_price = active_trade["take_profit_price"] * (1 - SIMULATED_SLIPPAGE)
+
+                if active_trade["side"] == "SHORT":
+                    if last_price >= active_trade["stop_price"]:
+                        exit_reason = "LOSS"
+                        exit_price = active_trade["stop_price"] * (1 + SIMULATED_SLIPPAGE)
+                    elif last_price <= active_trade["take_profit_price"]:
+                        exit_reason = "WIN"
+                        exit_price = active_trade["take_profit_price"] * (1 + SIMULATED_SLIPPAGE)
 
                 if exit_reason:
-                    gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"])
+                    if active_trade["side"] == "LONG":
+                        gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"])
+                    else:
+                        gross_pnl = active_trade["position_size"] * (active_trade["entry_price"] - exit_price)
                     exit_fee = active_trade["position_notional"] * FUTURES_TAKER_FEE_RATE
                     total_fees = active_trade["entry_fee"] + exit_fee
                     net_pnl = gross_pnl - total_fees
@@ -444,6 +521,7 @@ while True:
 
                     print(
                         f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
+                        f"side={active_trade['side']} "
                         f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl:.4f} "
                         f"balance={paper_usdt_balance:.4f}"
                     )
@@ -463,7 +541,7 @@ while True:
                     continue
             else:
                 pos_amt = get_position_amt()
-                if pos_amt <= 0:
+                if abs(pos_amt) < 1e-12:
                     usdt_now = get_usdt_balance()
                     gross_pnl = usdt_now - active_trade["usdt_before"]
                     fees = 0.0
@@ -510,24 +588,47 @@ while True:
 
         last_processed_close_time = candle["close_time"]
 
-        breakout = candle["close_price"] > candle["highest_high"]
-        vol_ok = candle["close_volume"] >= candle["avg_volume"] * 1.0
+        trend, ema50, ema200 = get_trend_state()
+        long_breakout = candle["close_price"] > candle["highest_high"]
+        short_breakdown = candle["close_price"] < candle["lowest_low"]
+        vol_ok = candle["close_volume"] >= candle["avg_volume"] * VOLUME_MULTIPLIER
+        long_signal = long_breakout and vol_ok and trend == "BULL"
+        short_signal = short_breakdown and vol_ok and trend == "BEAR"
 
         candle_ts = datetime.fromtimestamp(candle["close_time"] / 1000, tz=timezone.utc).isoformat()
         print(
-            f"{candle_ts} | close={candle['close_price']:.2f} high{BREAKOUT_LOOKBACK}={candle['highest_high']:.2f} "
-            f"vol={candle['close_volume']:.2f} avgVol{VOLUME_LOOKBACK}={candle['avg_volume']:.2f}"
+            f"{candle_ts} | close={candle['close_price']:.2f} high{LOOKBACK}={candle['highest_high']:.2f} "
+            f"low{LOOKBACK}={candle['lowest_low']:.2f} vol={candle['close_volume']:.2f} avgVol{VOLUME_LOOKBACK}={candle['avg_volume']:.2f} "
+            f"trend={trend} ema{EMA_FAST}={(ema50 if ema50 is not None else float('nan')):.2f} "
+            f"ema{EMA_SLOW}={(ema200 if ema200 is not None else float('nan')):.2f}"
         )
 
-        if breakout and vol_ok and not is_in_position(active_trade):
-            print("Signal confirmed: breakout + volume.")
-            trade = place_trade()
+        reason = None
+        if is_in_position(active_trade):
+            reason = "in_position"
+        elif len(trade_times) >= MAX_TRADES_PER_HOUR:
+            reason = "trade_limit"
+        elif not vol_ok:
+            reason = "low_volume"
+        elif trend not in {"BULL", "BEAR"}:
+            reason = "trend_filter_blocked"
+        elif not long_breakout and not short_breakdown:
+            reason = "no_breakout"
+        elif long_breakout and trend != "BULL":
+            reason = "trend_filter_blocked"
+        elif short_breakdown and trend != "BEAR":
+            reason = "trend_filter_blocked"
+
+        if (long_signal or short_signal) and not is_in_position(active_trade):
+            side = "LONG" if long_signal else "SHORT"
+            print(f"Signal confirmed: side={side} breakout+volume+trend.")
+            trade = place_trade(side)
             if trade:
                 trade_times.append(int(time.time() * 1000))
                 active_trade = trade
                 print(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
         else:
-            print("No trade: conditions not met or already in position.")
+            print(f"No trade: {reason or 'trend_filter_blocked'}")
 
         print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
         time.sleep(POLL_SECONDS)
