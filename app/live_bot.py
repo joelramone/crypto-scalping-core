@@ -31,14 +31,14 @@ EMA_FAST = 50
 EMA_SLOW = 200
 VOLUME_MULTIPLIER = 1.8
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
-risk_per_trade_usdt = float(os.getenv("RISK_PER_TRADE_USDT", "1.0"))
+RISK_PER_TRADE_USDT = float(os.getenv("RISK_PER_TRADE_USDT", "2.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.012")))
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "10"))
 SIMULATED_SLIPPAGE = float(os.getenv("SIMULATED_SLIPPAGE", "0.0002"))
-FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "3"))
+FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "5"))
 FUTURES_TAKER_FEE_RATE = float(os.getenv("FUTURES_TAKER_FEE_RATE", "0.0004"))
 MARGIN_TYPE = "ISOLATED"
 WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
@@ -323,16 +323,17 @@ def place_trade(side: str):
         return None
 
     effective_leverage = FUTURES_LEVERAGE
-    position_notional_usdt = risk_per_trade_usdt / (STOP_PCT * FUTURES_LEVERAGE)
-    raw_qty = position_notional_usdt / entry_price
-    qty = round_down_to_step(raw_qty, qty_step)
+    position_notional_usdt = RISK_PER_TRADE_USDT / (STOP_PCT * FUTURES_LEVERAGE)
+    qty_raw = position_notional_usdt / entry_price
+    qty = round_down_to_step(qty_raw, qty_step)
 
     stop_price = round_down_to_step(stop_price, price_tick)
     take_profit_price = round_down_to_step(take_profit_price, price_tick)
 
+    min_qty_adjusted = False
     if qty < min_qty:
-        print(f"Calculated qty {qty} is below minQty {min_qty}, skip trade.")
-        return None
+        qty = min_qty
+        min_qty_adjusted = True
 
     if min_notional and qty * entry_price < min_notional:
         print(f"Calculated notional {qty * entry_price:.4f} below minNotional {min_notional:.4f}, skip trade.")
@@ -358,13 +359,24 @@ def place_trade(side: str):
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_loss_if_stop = (notional * STOP_PCT) + estimated_entry_fee + estimated_exit_fee
     estimated_profit_if_tp = (notional * TAKE_PROFIT_PCT) - estimated_entry_fee - estimated_exit_fee
+    if min_qty_adjusted:
+        print("[WARNING] qty adjusted to minQty; effective risk increased.")
+        print(
+            f"[WARNING] minQty adjustment details -> effective_notional={notional:.4f} "
+            f"effective_risk_at_stop={estimated_loss_if_stop:.4f}"
+        )
+
     print(
         "Risk sizing -> "
-        f"risk_per_trade={risk_per_trade_usdt:.4f} "
+        f"risk_per_trade={RISK_PER_TRADE_USDT:.4f} "
         f"leverage={effective_leverage} "
         f"stop_pct={STOP_PCT:.6f} "
+
         f"calculated_notional={notional:.4f} "
-        f"estimated_loss_if_stop={estimated_loss_if_stop:.4f}"
+        f"qty_raw={qty_raw:.8f} "
+        f"rounded_qty={qty:.8f} "
+        f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
+        f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
     )
     print(
         f"ENTRY SIGNAL -> entry={entry_price:.2f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
@@ -465,7 +477,7 @@ if VALIDATION_MODE:
 sync_time_offset()
 ensure_futures_settings()
 print(
-    f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | Risk/trade={risk_per_trade_usdt:.2f} USDT | "
+    f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | Risk/trade={RISK_PER_TRADE_USDT:.2f} USDT | "
     f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}% | leverage={FUTURES_LEVERAGE}x | margin={MARGIN_TYPE}"
 )
 
