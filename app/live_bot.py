@@ -1,9 +1,11 @@
+import json
 import os
 import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -43,6 +45,53 @@ FUTURES_TAKER_FEE_RATE = float(os.getenv("FUTURES_TAKER_FEE_RATE", "0.0004"))
 MARGIN_TYPE = "ISOLATED"
 WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
 
+RUNTIME_DIR = Path("runtime")
+DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
+TRADES_LOG_FILE = RUNTIME_DIR / "trades_log.json"
+
+
+def ensure_runtime_files():
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    if not TRADES_LOG_FILE.exists():
+        TRADES_LOG_FILE.write_text("[]", encoding="utf-8")
+
+
+recent_events = deque(maxlen=50)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def log_event(message: str):
+    line = f"[{utc_now_iso()}] {message}"
+    print(message)
+    recent_events.append(line)
+
+
+def safe_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Metrics
+total_trades = 0
+wins = 0
+losses = 0
+gross_profit_sum = 0.0
+gross_loss_sum = 0.0
+fees_paid = 0.0
+net_pnl_total = 0.0
+equity_peak = CAPITAL_USDT
+max_drawdown_pct = 0.0
+
+last_signal = "NONE"
+last_reason = "startup"
+last_market_state = "TRADEABLE"
+last_trade_snapshot = None
+
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_SECRET_KEY")
 
@@ -67,21 +116,18 @@ def call_api(label, fn, *args, **kwargs):
     start = time.time()
     try:
         res = fn(*args, **kwargs)
-        elapsed = time.time() - start
-        print(f"[api-ok] {label} {elapsed:.2f}s")
+        print(f"[api-ok] {label} {time.time() - start:.2f}s")
         return res
     except Exception as e:
-        elapsed = time.time() - start
-        print(f"[api-err] {label} {elapsed:.2f}s {type(e).__name__}: {e}")
+        print(f"[api-err] {label} {time.time() - start:.2f}s {type(e).__name__}: {e}")
         raise
 
 
 def sync_time_offset():
     server_ms = call_api("get_server_time", client.get_server_time)["serverTime"]
     local_ms = int(time.time() * 1000)
-    offset = server_ms - local_ms
-    client.timestamp_offset = offset
-    print(f"Binance time offset synced: {offset} ms")
+    client.timestamp_offset = server_ms - local_ms
+    log_event(f"Binance time offset synced: {client.timestamp_offset} ms")
 
 
 def call_with_time_sync(label, fn, *args, **kwargs):
@@ -89,7 +135,7 @@ def call_with_time_sync(label, fn, *args, **kwargs):
         return call_api(label, fn, *args, **kwargs)
     except BinanceAPIException as e:
         if e.code == -1021:
-            print("Received -1021 timestamp error. Resyncing time and retrying once...")
+            log_event("Received -1021 timestamp error. Resyncing time and retrying once...")
             sync_time_offset()
             return call_api(f"{label} (retry)", fn, *args, **kwargs)
         raise
@@ -102,10 +148,110 @@ def d(v) -> Decimal:
 def round_down_to_step(value: float, step: float) -> float:
     if step <= 0:
         return value
-    value_d = d(value)
-    step_d = d(step)
-    rounded = (value_d / step_d).to_integral_value(rounding=ROUND_DOWN) * step_d
-    return float(rounded)
+    return float((d(value) / d(step)).to_integral_value(rounding=ROUND_DOWN) * d(step))
+
+
+def load_trade_log():
+    if not TRADES_LOG_FILE.exists():
+        return []
+    try:
+        data = json.loads(TRADES_LOG_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def append_trade_log(trade):
+    rows = load_trade_log()
+    rows.append(trade)
+    TRADES_LOG_FILE.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float):
+    global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct
+    total_trades += 1
+    if net_pnl_value >= 0:
+        wins += 1
+    else:
+        losses += 1
+
+    if gross_pnl >= 0:
+        gross_profit_sum += gross_pnl
+    else:
+        gross_loss_sum += gross_pnl
+
+    fees_paid += fees
+    net_pnl_total += net_pnl_value
+    equity_peak = max(equity_peak, current_balance)
+    dd = (equity_peak - current_balance) / equity_peak if equity_peak > 0 else 0.0
+    max_drawdown_pct = max(max_drawdown_pct, dd)
+
+
+def metrics_snapshot():
+    win_rate = (wins / total_trades) * 100 if total_trades > 0 else None
+    profit_factor = (gross_profit_sum / abs(gross_loss_sum)) if losses > 0 and gross_loss_sum != 0 else None
+    expectancy = (net_pnl_total / total_trades) if total_trades > 0 else None
+    return win_rate, profit_factor, expectancy
+
+
+def export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state):
+    win_rate, profit_factor, expectancy = metrics_snapshot()
+    balance = get_usdt_balance()
+    state = {
+        "timestamp_utc": utc_now_iso(),
+        "mode": "paper" if PAPER_MODE else "real",
+        "symbol": SYMBOL,
+        "timeframe": "1m",
+        "trend_timeframe": TREND_TIMEFRAME,
+        "margin_type": MARGIN_TYPE,
+        "leverage": FUTURES_LEVERAGE,
+        "paper_balance": balance,
+        "in_position": is_in_position(active_trade),
+        "position_side": active_trade["side"] if active_trade else None,
+        "position_qty": float(active_trade.get("position_size", active_trade.get("qty", 0.0))) if active_trade else 0.0,
+        "entry_price": safe_float(active_trade.get("entry_price")) if active_trade else None,
+        "stop_price": safe_float(active_trade.get("stop_price")) if active_trade else None,
+        "take_profit_price": safe_float(active_trade.get("take_profit_price", active_trade.get("tp_price"))) if active_trade else None,
+        "trades_this_hour": trades_this_hour,
+        "consecutive_losses": losses_in_row,
+        "market_state": market_state,
+        "total_trades": total_trades,
+        "wins": wins,
+        "losses": losses,
+        "net_pnl": net_pnl_total,
+        "fees_paid": fees_paid,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "expectancy": expectancy,
+        "max_drawdown_pct": max_drawdown_pct * 100,
+        "last_signal": last_signal,
+        "last_reason": last_reason,
+        "recent_events": list(recent_events),
+        "last_trade": last_trade_snapshot,
+        "last_closed_candle": datetime.fromtimestamp(last_closed_candle_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if last_closed_candle_ms
+        else None,
+    }
+    DASHBOARD_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def log_trade_exit(side, entry_price, exit_price, qty, gross_pnl, fees, net_pnl_value, balance_after):
+    global last_trade_snapshot
+    result = "WIN" if net_pnl_value >= 0 else "LOSS"
+    trade = {
+        "timestamp": utc_now_iso(),
+        "side": side,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "qty": qty,
+        "gross_pnl": gross_pnl,
+        "fees": fees,
+        "net_pnl": net_pnl_value,
+        "result": result,
+        "balance_after": balance_after,
+    }
+    append_trade_log(trade)
+    last_trade_snapshot = trade
 
 
 exchange_info = call_with_time_sync("futures_exchange_info", client.futures_exchange_info)
@@ -114,11 +260,7 @@ if not symbol_info:
     print(f"Could not load futures symbol info for {SYMBOL}")
     sys.exit(1)
 
-price_tick = 0.0
-qty_step = 0.0
-min_qty = 0.0
-min_notional = 0.0
-
+price_tick = qty_step = min_qty = min_notional = 0.0
 for flt in symbol_info["filters"]:
     if flt["filterType"] == "PRICE_FILTER":
         price_tick = float(flt["tickSize"])
@@ -138,56 +280,27 @@ paper_usdt_balance = CAPITAL_USDT
 def ensure_futures_settings():
     if PAPER_MODE:
         return
-
     try:
-        call_with_time_sync(
-            "futures_change_margin_type",
-            client.futures_change_margin_type,
-            symbol=SYMBOL,
-            marginType=MARGIN_TYPE,
-        )
-        print(f"Margin type set to {MARGIN_TYPE} for {SYMBOL}")
+        call_with_time_sync("futures_change_margin_type", client.futures_change_margin_type, symbol=SYMBOL, marginType=MARGIN_TYPE)
     except BinanceAPIException as e:
-        if e.code == -4046:
-            print(f"Margin type already {MARGIN_TYPE} for {SYMBOL}")
-        else:
+        if e.code != -4046:
             raise
-
-    call_with_time_sync(
-        "futures_change_leverage",
-        client.futures_change_leverage,
-        symbol=SYMBOL,
-        leverage=FUTURES_LEVERAGE,
-    )
-    print(f"Leverage set to {FUTURES_LEVERAGE}x for {SYMBOL}")
+    call_with_time_sync("futures_change_leverage", client.futures_change_leverage, symbol=SYMBOL, leverage=FUTURES_LEVERAGE)
 
 
 def get_usdt_balance() -> float:
     if PAPER_MODE:
         return paper_usdt_balance
-
     balances = call_with_time_sync("futures_account_balance", client.futures_account_balance)
     usdt = next((b for b in balances if b.get("asset") == "USDT"), None)
-    if not usdt:
-        return 0.0
-    return float(usdt["balance"])
+    return float(usdt["balance"]) if usdt else 0.0
 
 
 def get_position_amt() -> float:
     if PAPER_MODE:
         return 0.0
-    positions = call_with_time_sync(
-        "futures_position_information", client.futures_position_information, symbol=SYMBOL
-    )
-    if not positions:
-        return 0.0
-    return float(positions[0]["positionAmt"])
-
-
-def get_open_orders_count() -> int:
-    if PAPER_MODE:
-        return 0
-    return len(call_with_time_sync("futures_get_open_orders", client.futures_get_open_orders, symbol=SYMBOL))
+    positions = call_with_time_sync("futures_position_information", client.futures_position_information, symbol=SYMBOL)
+    return float(positions[0]["positionAmt"]) if positions else 0.0
 
 
 def is_in_position(active_trade=None) -> bool:
@@ -206,6 +319,18 @@ def calculate_ema(prices, period: int):
     return ema
 
 
+def calculate_atr(klines, period=14):
+    if len(klines) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(klines)):
+        high = float(klines[i][2])
+        low = float(klines[i][3])
+        prev_close = float(klines[i - 1][4])
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return sum(trs[-period:]) / period
+
+
 last_trend_close_time = None
 last_trend_value = "FLAT"
 last_trend_ema_fast = None
@@ -214,33 +339,17 @@ last_trend_ema_slow = None
 
 def get_trend_state():
     global last_trend_close_time, last_trend_value, last_trend_ema_fast, last_trend_ema_slow
-
-    klines = call_with_time_sync(
-        "futures_klines(trend)",
-        client.futures_klines,
-        symbol=SYMBOL,
-        interval=TREND_TIMEFRAME,
-        limit=300,
-    )
+    klines = call_with_time_sync("futures_klines(trend)", client.futures_klines, symbol=SYMBOL, interval=TREND_TIMEFRAME, limit=300)
     if len(klines) < EMA_SLOW + 2:
         return last_trend_value, last_trend_ema_fast, last_trend_ema_slow
-
     latest_closed = klines[-2]
     latest_closed_time = int(latest_closed[6])
     if last_trend_close_time == latest_closed_time:
         return last_trend_value, last_trend_ema_fast, last_trend_ema_slow
-
     closes = [float(k[4]) for k in klines[:-1]]
     ema_fast = calculate_ema(closes, EMA_FAST)
     ema_slow = calculate_ema(closes, EMA_SLOW)
-
-    trend = "FLAT"
-    if ema_fast is not None and ema_slow is not None:
-        if ema_fast > ema_slow:
-            trend = "BULL"
-        elif ema_fast < ema_slow:
-            trend = "BEAR"
-
+    trend = "BULL" if ema_fast and ema_slow and ema_fast > ema_slow else "BEAR" if ema_fast and ema_slow and ema_fast < ema_slow else "FLAT"
     last_trend_close_time = latest_closed_time
     last_trend_value = trend
     last_trend_ema_fast = ema_fast
@@ -249,32 +358,30 @@ def get_trend_state():
 
 
 def get_closed_candle_data():
-    max_lookback = max(LOOKBACK, VOLUME_LOOKBACK)
-    klines = call_with_time_sync(
-        "futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT
-    )
+    max_lookback = max(LOOKBACK, VOLUME_LOOKBACK, 20)
+    klines = call_with_time_sync("futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT)
     if len(klines) < max_lookback + 2:
         return None
-
     closed = klines[-2]
     breakout_history = klines[-(LOOKBACK + 2):-2]
     volume_history = klines[-(VOLUME_LOOKBACK + 2):-2]
-
+    vol20_history = klines[-22:-2]
     close_price = float(closed[4])
     close_volume = float(closed[5])
     close_time = int(closed[6])
-
-    highest_high = max(float(c[2]) for c in breakout_history)
-    lowest_low = min(float(c[3]) for c in breakout_history)
-    avg_volume = sum(float(c[5]) for c in volume_history) / len(volume_history)
-
+    atr14 = calculate_atr(klines[:-1], 14)
+    volume_sma20 = sum(float(k[5]) for k in vol20_history) / len(vol20_history)
+    volatility_score = (atr14 / close_price) if atr14 and close_price > 0 else 0.0
+    volume_score = (close_volume / volume_sma20) if volume_sma20 > 0 else 0.0
+    market_state = "LOW_ACTIVITY" if (volatility_score < 0.001 or volume_score < 1.0) else "TRADEABLE"
     return {
         "close_time": close_time,
         "close_price": close_price,
         "close_volume": close_volume,
-        "highest_high": highest_high,
-        "lowest_low": lowest_low,
-        "avg_volume": avg_volume,
+        "highest_high": max(float(c[2]) for c in breakout_history),
+        "lowest_low": min(float(c[3]) for c in breakout_history),
+        "avg_volume": sum(float(c[5]) for c in volume_history) / len(volume_history),
+        "market_state": market_state,
     }
 
 
@@ -283,137 +390,58 @@ def get_last_price() -> float:
     return float(ticker["price"])
 
 
-def print_heartbeat(last_closed_candle_ms, trades_this_hour: int, losses_in_row: int, active_trade=None):
-    utc_now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if last_closed_candle_ms is None:
-        last_closed = "none"
-    else:
-        last_closed = datetime.fromtimestamp(
-            last_closed_candle_ms / 1000, tz=timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    usdt_balance = get_usdt_balance()
+def print_heartbeat(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade=None):
+    balance = get_usdt_balance()
     pos_amt = active_trade["position_size"] if PAPER_MODE and active_trade else get_position_amt()
-    in_position = is_in_position(active_trade)
-
-    print(
-        f"[heartbeat] {utc_now_iso} last_closed={last_closed} mode={get_mode_label()} "
-        f"margin={MARGIN_TYPE} leverage={FUTURES_LEVERAGE}x usdt_balance={usdt_balance:.4f} "
-        f"position_amt={pos_amt:.6f} in_position={in_position} "
-        f"trades_this_hour={trades_this_hour} consecutive_losses={losses_in_row}"
+    last_closed = datetime.fromtimestamp(last_closed_candle_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if last_closed_candle_ms else "none"
+    log_event(
+        f"[heartbeat] {utc_now_iso()} last_closed={last_closed} mode={get_mode_label()} margin={MARGIN_TYPE} leverage={FUTURES_LEVERAGE}x "
+        f"usdt_balance={balance:.4f} position_amt={pos_amt:.6f} in_position={is_in_position(active_trade)} trades_this_hour={trades_this_hour} consecutive_losses={losses_in_row}"
     )
 
 
 def place_trade(side: str):
     global paper_usdt_balance
-
     usdt_before = get_usdt_balance()
     close_price = get_last_price()
     is_long = side == "LONG"
     entry_price = close_price * (1 + SIMULATED_SLIPPAGE) if is_long else close_price * (1 - SIMULATED_SLIPPAGE)
     stop_price = entry_price * (1 - STOP_PCT) if is_long else entry_price * (1 + STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT) if is_long else entry_price * (1 - TAKE_PROFIT_PCT)
-
-    if STOP_PCT <= 0:
-        print("STOP_PCT must be > 0.")
-        return None
-
-    if FUTURES_LEVERAGE <= 0:
-        print("FUTURES_LEVERAGE must be > 0.")
-        return None
-
-    effective_leverage = FUTURES_LEVERAGE
     position_notional_usdt = RISK_PER_TRADE_USDT / (STOP_PCT * FUTURES_LEVERAGE)
     qty_raw = position_notional_usdt / entry_price
     qty = round_down_to_step(qty_raw, qty_step)
-
     stop_price = round_down_to_step(stop_price, price_tick)
     take_profit_price = round_down_to_step(take_profit_price, price_tick)
-
-    min_qty_adjusted = False
     if qty < min_qty:
         qty = min_qty
-        min_qty_adjusted = True
-
     if min_notional and qty * entry_price < min_notional:
-        print(f"Calculated notional {qty * entry_price:.4f} below minNotional {min_notional:.4f}, skip trade.")
         return None
-
-    margin_required = (qty * entry_price) / effective_leverage
-    if margin_required > usdt_before:
-        max_qty = round_down_to_step((usdt_before * effective_leverage) / entry_price, qty_step)
-        if max_qty < min_qty:
-            print("Insufficient USDT margin for minimum quantity, skip trade.")
-            return None
-        qty = max_qty
-
     notional = qty * entry_price
-    margin_required = notional / effective_leverage
-    if margin_required > usdt_before:
-        print(
-            f"Insufficient USDT margin after sizing. required={margin_required:.4f} available={usdt_before:.4f}, skip trade."
-        )
+    if (notional / FUTURES_LEVERAGE) > usdt_before:
         return None
-
     estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
-    estimated_loss_if_stop = (notional * STOP_PCT) + estimated_entry_fee + estimated_exit_fee
-    estimated_profit_if_tp = (notional * TAKE_PROFIT_PCT) - estimated_entry_fee - estimated_exit_fee
-    if min_qty_adjusted:
-        print("[WARNING] qty adjusted to minQty; effective risk increased.")
-        print(
-            f"[WARNING] minQty adjustment details -> effective_notional={notional:.4f} "
-            f"effective_risk_at_stop={estimated_loss_if_stop:.4f}"
-        )
-
-    print(
-        "Risk sizing -> "
-        f"risk_per_trade={RISK_PER_TRADE_USDT:.4f} "
-        f"leverage={effective_leverage} "
-        f"stop_pct={STOP_PCT:.6f} "
-
-        f"calculated_notional={notional:.4f} "
-        f"qty_raw={qty_raw:.8f} "
-        f"rounded_qty={qty:.8f} "
-        f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
-        f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
-    )
-    print(
-        f"ENTRY SIGNAL -> entry={entry_price:.2f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
-        f"qty={qty:.6f} notional={notional:.2f} margin_required={margin_required:.4f}"
-    )
 
     if PAPER_MODE:
-        entry_fee = estimated_entry_fee
-        if entry_fee > paper_usdt_balance:
-            print("Insufficient paper USDT balance for entry fee, skip trade.")
+        if estimated_entry_fee > paper_usdt_balance:
             return None
-
-        paper_usdt_balance -= entry_fee
-        print(
-            f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} "
-            f"side={side} notional={notional:.4f} entry_fee={entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
-            f"paper_usdt_balance={paper_usdt_balance:.4f}"
+        paper_usdt_balance -= estimated_entry_fee
+        log_event(
+            f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} side={side} notional={notional:.4f} "
+            f"entry_fee={estimated_entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} paper_usdt_balance={paper_usdt_balance:.4f}"
         )
-        print(
-            "[ENTRY ESTIMATE] "
-            f"side={side} leverage={effective_leverage} "
-            f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
-            f"qty={qty:.6f} notional_usdt={notional:.4f} "
-            f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
-            f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
-        )
-
         return {
             "entry_time_ms": int(time.time() * 1000),
             "position_size": qty,
             "position_notional": notional,
             "side": side,
             "entry_price": entry_price,
-            "entry_fee": entry_fee,
+            "entry_fee": estimated_entry_fee,
             "stop_price": stop_price,
             "take_profit_price": take_profit_price,
             "usdt_before": usdt_before,
+            "estimated_exit_fee": estimated_exit_fee,
         }
 
     entry_order = call_with_time_sync(
@@ -424,7 +452,6 @@ def place_trade(side: str):
         type="MARKET",
         quantity=qty,
     )
-
     call_with_time_sync(
         "futures_create_order(STOP_MARKET)",
         client.futures_create_order,
@@ -436,7 +463,6 @@ def place_trade(side: str):
         reduceOnly=True,
         workingType=WORKING_TYPE,
     )
-
     call_with_time_sync(
         "futures_create_order(TAKE_PROFIT_MARKET)",
         client.futures_create_order,
@@ -448,17 +474,6 @@ def place_trade(side: str):
         reduceOnly=True,
         workingType=WORKING_TYPE,
     )
-
-    print(f"Orders placed: MARKET {'BUY' if is_long else 'SELL'} + STOP_MARKET + TAKE_PROFIT_MARKET")
-    print(
-        "[ENTRY ESTIMATE] "
-        f"side={side} leverage={effective_leverage} "
-        f"entry_price={entry_price:.2f} stop_price={stop_price:.2f} tp_price={take_profit_price:.2f} "
-        f"qty={qty:.6f} notional_usdt={notional:.4f} "
-        f"estimated_loss_at_stop={estimated_loss_if_stop:.4f} "
-        f"estimated_profit_at_tp={estimated_profit_if_tp:.4f}"
-    )
-
     return {
         "entry_order": entry_order,
         "entry_time_ms": int(time.time() * 1000),
@@ -471,15 +486,12 @@ def place_trade(side: str):
     }
 
 
-print("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
+ensure_runtime_files()
+log_event("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
 if VALIDATION_MODE:
-    print("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
+    log_event("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
 sync_time_offset()
 ensure_futures_settings()
-print(
-    f"Mode={get_mode_label()} | Capital={CAPITAL_USDT} USDT | Risk/trade={RISK_PER_TRADE_USDT:.2f} USDT | "
-    f"SL={STOP_PCT * 100:.2f}% | TP={TAKE_PROFIT_PCT * 100:.2f}% | leverage={FUTURES_LEVERAGE}x | margin={MARGIN_TYPE}"
-)
 
 last_processed_close_time = None
 trade_times = deque()
@@ -489,7 +501,6 @@ active_trade = None
 while True:
     try:
         now_ms = int(time.time() * 1000)
-
         while trade_times and now_ms - trade_times[0] > 3600 * 1000:
             trade_times.popleft()
 
@@ -498,7 +509,6 @@ while True:
                 last_price = get_last_price()
                 exit_reason = None
                 exit_price = None
-
                 if last_price <= active_trade["stop_price"]:
                     if active_trade["side"] == "LONG":
                         exit_reason = "LOSS"
@@ -507,7 +517,6 @@ while True:
                     if active_trade["side"] == "LONG":
                         exit_reason = "WIN"
                         exit_price = active_trade["take_profit_price"] * (1 - SIMULATED_SLIPPAGE)
-
                 if active_trade["side"] == "SHORT":
                     if last_price >= active_trade["stop_price"]:
                         exit_reason = "LOSS"
@@ -517,38 +526,33 @@ while True:
                         exit_price = active_trade["take_profit_price"] * (1 + SIMULATED_SLIPPAGE)
 
                 if exit_reason:
-                    if active_trade["side"] == "LONG":
-                        gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"])
-                    else:
-                        gross_pnl = active_trade["position_size"] * (active_trade["entry_price"] - exit_price)
+                    gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"]) if active_trade["side"] == "LONG" else active_trade["position_size"] * (active_trade["entry_price"] - exit_price)
                     exit_fee = active_trade["position_notional"] * FUTURES_TAKER_FEE_RATE
                     total_fees = active_trade["entry_fee"] + exit_fee
-                    net_pnl = gross_pnl - total_fees
-                    paper_usdt_balance += net_pnl
-
-                    if exit_reason == "LOSS":
-                        consecutive_losses += 1
-                    else:
-                        consecutive_losses = 0
-
-                    print(
-                        f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} "
-                        f"side={active_trade['side']} "
-                        f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl:.4f} "
-                        f"balance={paper_usdt_balance:.4f}"
+                    net_pnl_value = gross_pnl - total_fees
+                    paper_usdt_balance += net_pnl_value
+                    consecutive_losses = consecutive_losses + 1 if exit_reason == "LOSS" else 0
+                    log_event(
+                        f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} side={active_trade['side']} "
+                        f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl_value:.4f} balance={paper_usdt_balance:.4f}"
                     )
-
+                    update_metrics(net_pnl_value, gross_pnl, total_fees, paper_usdt_balance)
+                    log_trade_exit(
+                        active_trade["side"],
+                        active_trade["entry_price"],
+                        exit_price,
+                        active_trade["position_size"],
+                        gross_pnl,
+                        total_fees,
+                        net_pnl_value,
+                        paper_usdt_balance,
+                    )
                     active_trade = None
-
-                    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                        print("3 consecutive losses reached. Shutting down.")
-                        break
                 else:
-                    print(
-                        f"Paper trade still active. price={last_price:.2f} "
-                        f"stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
+                    log_event(
+                        f"Paper trade still active. price={last_price:.2f} stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
                     )
-                    print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+                    export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
             else:
@@ -557,48 +561,49 @@ while True:
                     usdt_now = get_usdt_balance()
                     gross_pnl = usdt_now - active_trade["usdt_before"]
                     fees = 0.0
-                    net_pnl = gross_pnl - fees
-                    print(
-                        f"[FUTURES EXIT] gross_pnl={gross_pnl:.4f} fees={fees:.4f} "
-                        f"net_pnl={net_pnl:.4f} balance={usdt_now:.4f}"
-                    )
-
-                    if net_pnl < 0:
-                        consecutive_losses += 1
-                    else:
-                        consecutive_losses = 0
-
+                    net_pnl_value = gross_pnl
+                    result = "LOSS" if net_pnl_value < 0 else "WIN"
+                    log_event(f"[FUTURES EXIT {result}] gross_pnl={gross_pnl:.4f} fees={fees:.4f} net_pnl={net_pnl_value:.4f} balance={usdt_now:.4f}")
+                    consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
+                    update_metrics(net_pnl_value, gross_pnl, fees, usdt_now)
+                    log_trade_exit(active_trade["side"], active_trade["entry_price"], get_last_price(), active_trade["qty"], gross_pnl, fees, net_pnl_value, usdt_now)
                     active_trade = None
-
-                    if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-                        print("3 consecutive losses reached. Shutting down.")
-                        break
                 else:
-                    print("Futures trade still active. Waiting for stop/tp trigger...")
-                    print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+                    log_event("Futures trade still active. Waiting for stop/tp trigger...")
+                    export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
 
+            if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                log_event("3 consecutive losses reached. Shutting down.")
+                export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                break
+
         if len(trade_times) >= MAX_TRADES_PER_HOUR:
-            print("Trade limit reached (3 per hour). Waiting...")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+            last_reason = "trade_limit"
+            log_event("Trade limit reached (3 per hour). Waiting...")
+            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
         candle = get_closed_candle_data()
         if candle is None:
-            print("Not enough candle data yet.")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+            last_reason = "not_enough_candles"
+            log_event("Not enough candle data yet.")
+            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
         if candle["close_time"] == last_processed_close_time:
-            print("No new closed candle.")
-            print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+            last_reason = "no_new_candle"
+            log_event("No new closed candle.")
+            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
         last_processed_close_time = candle["close_time"]
+        last_market_state = candle["market_state"]
+        log_event(f"[MARKET] {last_market_state}")
 
         trend, ema50, ema200 = get_trend_state()
         long_breakout = candle["close_price"] > candle["highest_high"]
@@ -607,45 +612,38 @@ while True:
         long_signal = long_breakout and vol_ok and trend == "BULL"
         short_signal = short_breakdown and vol_ok and trend == "BEAR"
 
-        candle_ts = datetime.fromtimestamp(candle["close_time"] / 1000, tz=timezone.utc).isoformat()
-        print(
-            f"{candle_ts} | close={candle['close_price']:.2f} high{LOOKBACK}={candle['highest_high']:.2f} "
-            f"low{LOOKBACK}={candle['lowest_low']:.2f} vol={candle['close_volume']:.2f} avgVol{VOLUME_LOOKBACK}={candle['avg_volume']:.2f} "
-            f"trend={trend} ema{EMA_FAST}={(ema50 if ema50 is not None else float('nan')):.2f} "
-            f"ema{EMA_SLOW}={(ema200 if ema200 is not None else float('nan')):.2f}"
-        )
-
-        reason = None
         if is_in_position(active_trade):
-            reason = "in_position"
-        elif len(trade_times) >= MAX_TRADES_PER_HOUR:
-            reason = "trade_limit"
+            last_reason = "in_position"
         elif not vol_ok:
-            reason = "low_volume"
+            last_reason = "low_volume"
         elif trend not in {"BULL", "BEAR"}:
-            reason = "trend_filter_blocked"
+            last_reason = "trend_filter_blocked"
         elif not long_breakout and not short_breakdown:
-            reason = "no_breakout"
+            last_reason = "no_breakout"
         elif long_breakout and trend != "BULL":
-            reason = "trend_filter_blocked"
+            last_reason = "trend_filter_blocked"
         elif short_breakdown and trend != "BEAR":
-            reason = "trend_filter_blocked"
+            last_reason = "trend_filter_blocked"
+        else:
+            last_reason = "breakout + volume + trend"
 
         if (long_signal or short_signal) and not is_in_position(active_trade):
             side = "LONG" if long_signal else "SHORT"
-            print(f"Signal confirmed: side={side} breakout+volume+trend.")
+            last_signal = side
+            log_event(f"Signal confirmed: side={side} breakout+volume+trend.")
             trade = place_trade(side)
             if trade:
                 trade_times.append(int(time.time() * 1000))
                 active_trade = trade
-                print(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
+                log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
         else:
-            print(f"No trade: {reason or 'trend_filter_blocked'}")
+            last_signal = "NONE"
+            log_event(f"No trade: {last_reason}")
 
         print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+        export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
-
     except Exception as e:
-        print(f"Error: {e}")
-        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
+        log_event(f"Error: {e}")
+        export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
