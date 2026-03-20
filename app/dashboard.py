@@ -1,12 +1,29 @@
 import json
 from pathlib import Path
 
-from flask import Flask, render_template_string
+from flask import Flask, jsonify, render_template_string
 
 app = Flask(__name__)
 RUNTIME_DIR = Path("runtime")
 STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_FILE = RUNTIME_DIR / "trades_log.json"
+CANDLES_FILE = RUNTIME_DIR / "candles.json"
+
+
+EMPTY_CANDLES_PAYLOAD = {
+    "symbol": "BTCUSDT",
+    "timeframe": "1m",
+    "updated_at_utc": None,
+    "candles": [],
+    "ema_fast": [],
+    "ema_slow": [],
+    "levels": {
+        "entry_price": None,
+        "stop_price": None,
+        "take_profit_price": None,
+    },
+    "markers": [],
+}
 
 
 def load_json(path, default):
@@ -23,7 +40,6 @@ TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="refresh" content="5">
   <title>Crypto Scalping Core Dashboard</title>
   <style>
     body { background: #0f172a; color: #e2e8f0; font-family: Arial, sans-serif; margin: 20px; }
@@ -36,10 +52,24 @@ TEMPLATE = """
     .win { color:#22c55e; font-weight:bold; }
     .loss { color:#ef4444; font-weight:bold; }
     .events { background:#111827; padding:12px; border-radius:8px; max-height:300px; overflow:auto; }
+    .chart-card { background:#111827; border: 1px solid #334155; border-radius:10px; padding:12px; margin-bottom:18px; }
+    .chart-meta { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; color:#94a3b8; font-size:13px; }
+    #candlestickChart { width:100%; height:500px; }
   </style>
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <h1>Crypto Scalping Core Dashboard</h1>
+
+  <h2>Live Candlestick Chart</h2>
+  <div class="chart-card">
+    <div class="chart-meta">
+      <div id="chartSymbol">BTCUSDT · 1m</div>
+      <div id="chartUpdated">Waiting for data...</div>
+    </div>
+    <div id="candlestickChart"></div>
+  </div>
+
   <div class="grid">
     {% for label, value in summary.items() %}
       <div class="card"><strong>{{ label }}</strong><br>{{ value }}</div>
@@ -89,6 +119,128 @@ TEMPLATE = """
   <div class="events">
     {% for e in events %}<div>{{ e }}</div>{% endfor %}
   </div>
+
+  <script>
+    const chartContainer = document.getElementById('candlestickChart');
+    const chart = LightweightCharts.createChart(chartContainer, {
+      layout: {
+        background: { color: '#111827' },
+        textColor: '#cbd5e1',
+      },
+      grid: {
+        vertLines: { color: '#1f2937' },
+        horzLines: { color: '#1f2937' },
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+      },
+      timeScale: {
+        borderColor: '#334155',
+        timeVisible: true,
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+      },
+      width: chartContainer.clientWidth,
+      height: 500,
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      borderDownColor: '#ef4444',
+      wickUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+    });
+
+    const emaFastSeries = chart.addLineSeries({ color: '#eab308', lineWidth: 2, priceLineVisible: false });
+    const emaSlowSeries = chart.addLineSeries({ color: '#38bdf8', lineWidth: 2, priceLineVisible: false });
+
+    let levelLines = [];
+
+    function clearLevelLines() {
+      for (const line of levelLines) {
+        candleSeries.removePriceLine(line);
+      }
+      levelLines = [];
+    }
+
+    function addPriceLine(value, title, color) {
+      if (value === null || value === undefined) return;
+      levelLines.push(
+        candleSeries.createPriceLine({
+          price: Number(value),
+          color,
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title,
+        })
+      );
+    }
+
+    async function refreshChart() {
+      try {
+        const response = await fetch('/api/candles', { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = await response.json();
+
+        const candles = (payload.candles || []).map(c => ({
+          time: Math.floor(new Date(c.time).getTime() / 1000),
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+        }));
+
+        const emaFast = (payload.ema_fast || []).map(v => ({
+          time: Math.floor(new Date(v.time).getTime() / 1000),
+          value: Number(v.value),
+        }));
+
+        const emaSlow = (payload.ema_slow || []).map(v => ({
+          time: Math.floor(new Date(v.time).getTime() / 1000),
+          value: Number(v.value),
+        }));
+
+        const markers = (payload.markers || []).map(m => ({
+          time: Math.floor(new Date(m.time).getTime() / 1000),
+          position: m.position,
+          color: m.color,
+          shape: m.shape,
+          text: m.text,
+        }));
+
+        candleSeries.setData(candles);
+        emaFastSeries.setData(emaFast);
+        emaSlowSeries.setData(emaSlow);
+        candleSeries.setMarkers(markers);
+
+        clearLevelLines();
+        const levels = payload.levels || {};
+        addPriceLine(levels.entry_price, 'Entry', '#a78bfa');
+        addPriceLine(levels.stop_price, 'Stop', '#ef4444');
+        addPriceLine(levels.take_profit_price, 'Take Profit', '#22c55e');
+
+        chart.timeScale().fitContent();
+
+        document.getElementById('chartSymbol').textContent = `${payload.symbol || 'BTCUSDT'} · ${payload.timeframe || '1m'}`;
+        document.getElementById('chartUpdated').textContent = payload.updated_at_utc
+          ? `Updated: ${payload.updated_at_utc}`
+          : 'Waiting for data...';
+      } catch (error) {
+        console.error('Chart refresh failed:', error);
+      }
+    }
+
+    window.addEventListener('resize', () => {
+      chart.applyOptions({ width: chartContainer.clientWidth, height: 500 });
+    });
+
+    refreshChart();
+    setInterval(refreshChart, 5000);
+  </script>
 </body>
 </html>
 """
@@ -143,6 +295,12 @@ def index():
         trades=trades_last_20,
         events=list(reversed(state.get("recent_events", []))),
     )
+
+
+@app.route("/api/candles")
+def api_candles():
+    payload = load_json(CANDLES_FILE, EMPTY_CANDLES_PAYLOAD)
+    return jsonify(payload)
 
 
 if __name__ == "__main__":

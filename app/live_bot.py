@@ -50,6 +50,7 @@ WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
 RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_LOG_FILE = RUNTIME_DIR / "trades_log.json"
+CANDLES_FILE = RUNTIME_DIR / "candles.json"
 
 
 def ensure_runtime_files():
@@ -234,7 +235,7 @@ def export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_ro
         if last_closed_candle_ms
         else None,
     }
-    DASHBOARD_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    safe_write_json(DASHBOARD_STATE_FILE, state)
 
 
 def log_trade_exit(side, entry_price, exit_price, qty, gross_pnl, fees, net_pnl_value, balance_after):
@@ -338,6 +339,128 @@ last_trend_value = "FLAT"
 last_trend_ema_fast = None
 last_trend_ema_slow = None
 
+
+
+
+def calculate_ema_series(prices, period: int):
+    if len(prices) < period:
+        return []
+    multiplier = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    result = [None] * (period - 1) + [ema]
+    for price in prices[period:]:
+        ema = (price - ema) * multiplier + ema
+        result.append(ema)
+    return result
+
+
+def ms_to_utc_iso(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def safe_write_json(path: Path, payload):
+    try:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log_event(f"[WARN] Could not write {path}: {exc}")
+
+
+def build_trade_markers(active_trade):
+    markers = []
+    for trade in load_trade_log()[-200:]:
+        timestamp = trade.get("timestamp")
+        side = trade.get("side")
+        result = trade.get("result")
+        if timestamp and side in {"LONG", "SHORT"}:
+            markers.append(
+                {
+                    "time": timestamp,
+                    "position": "belowBar" if side == "LONG" else "aboveBar",
+                    "color": "green" if side == "LONG" else "red",
+                    "shape": "arrowUp" if side == "LONG" else "arrowDown",
+                    "text": side,
+                }
+            )
+        if timestamp and result in {"WIN", "LOSS"}:
+            markers.append(
+                {
+                    "time": timestamp,
+                    "position": "aboveBar" if result == "WIN" else "belowBar",
+                    "color": "blue" if result == "WIN" else "orange",
+                    "shape": "circle",
+                    "text": result,
+                }
+            )
+
+    if active_trade and active_trade.get("entry_time_ms"):
+        side = active_trade.get("side")
+        if side in {"LONG", "SHORT"}:
+            markers.append(
+                {
+                    "time": ms_to_utc_iso(int(active_trade["entry_time_ms"])),
+                    "position": "belowBar" if side == "LONG" else "aboveBar",
+                    "color": "green" if side == "LONG" else "red",
+                    "shape": "arrowUp" if side == "LONG" else "arrowDown",
+                    "text": side,
+                }
+            )
+    return markers
+
+
+def export_candles_snapshot(active_trade):
+    klines = call_with_time_sync("futures_klines(chart)", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=201)
+    if len(klines) < 2:
+        return
+
+    closed_klines = klines[:-1][-200:]
+    closes = [float(k[4]) for k in closed_klines]
+    ema_fast_series = calculate_ema_series(closes, EMA_FAST)
+    ema_slow_series = calculate_ema_series(closes, EMA_SLOW)
+
+    candles = []
+    ema_fast = []
+    ema_slow = []
+    for idx, kline in enumerate(closed_klines):
+        timestamp = ms_to_utc_iso(int(kline[0]))
+        candles.append(
+            {
+                "time": timestamp,
+                "open": float(kline[1]),
+                "high": float(kline[2]),
+                "low": float(kline[3]),
+                "close": float(kline[4]),
+                "volume": float(kline[5]),
+            }
+        )
+        fast_value = ema_fast_series[idx] if idx < len(ema_fast_series) else None
+        slow_value = ema_slow_series[idx] if idx < len(ema_slow_series) else None
+        if fast_value is not None:
+            ema_fast.append({"time": timestamp, "value": fast_value})
+        if slow_value is not None:
+            ema_slow.append({"time": timestamp, "value": slow_value})
+
+    levels = {"entry_price": None, "stop_price": None, "take_profit_price": None}
+    if active_trade:
+        levels["entry_price"] = safe_float(active_trade.get("entry_price"))
+        levels["stop_price"] = safe_float(active_trade.get("stop_price"))
+        levels["take_profit_price"] = safe_float(active_trade.get("take_profit_price", active_trade.get("tp_price")))
+
+    payload = {
+        "symbol": SYMBOL,
+        "timeframe": "1m",
+        "updated_at_utc": utc_now_iso(),
+        "candles": candles,
+        "ema_fast": ema_fast,
+        "ema_slow": ema_slow,
+        "levels": levels,
+        "markers": build_trade_markers(active_trade),
+    }
+    safe_write_json(CANDLES_FILE, payload)
+
+
+def export_runtime_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state):
+    export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state)
+    export_candles_snapshot(active_trade)
 
 def get_trend_state():
     global last_trend_close_time, last_trend_value, last_trend_ema_fast, last_trend_ema_slow
@@ -500,6 +623,7 @@ last_processed_close_time = None
 trade_times = deque()
 consecutive_losses = 0
 active_trade = None
+last_market_state = "TRADEABLE"
 
 while True:
     try:
@@ -555,7 +679,7 @@ while True:
                     log_event(
                         f"Paper trade still active. price={last_price:.2f} stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
                     )
-                    export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                    export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
             else:
@@ -573,19 +697,19 @@ while True:
                     active_trade = None
                 else:
                     log_event("Futures trade still active. Waiting for stop/tp trigger...")
-                    export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                    export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
 
             if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
                 log_event("3 consecutive losses reached. Shutting down.")
-                export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                 break
 
         if len(trade_times) >= MAX_TRADES_PER_HOUR:
             last_reason = "trade_limit"
             log_event("Trade limit reached (3 per hour). Waiting...")
-            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
@@ -593,14 +717,14 @@ while True:
         if candle is None:
             last_reason = "not_enough_candles"
             log_event("Not enough candle data yet.")
-            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
         if candle["close_time"] == last_processed_close_time:
             last_reason = "no_new_candle"
             log_event("No new closed candle.")
-            export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
@@ -640,9 +764,9 @@ while True:
             log_event(f"No trade: {last_reason}")
 
         print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
-        export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+        export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
     except Exception as e:
         log_event(f"Error: {e}")
-        export_dashboard_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+        export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
