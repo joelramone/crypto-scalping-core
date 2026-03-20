@@ -31,7 +31,9 @@ LOOKBACK = BREAKOUT_LOOKBACK
 TREND_TIMEFRAME = "15m"
 EMA_FAST = 50
 EMA_SLOW = 200
-VOLUME_MULTIPLIER = 1.8
+MIN_VOLUME_SCORE = 0.7
+MICRO_BREAKOUT_FACTOR = 0.999
+MICRO_BREAKDOWN_FACTOR = 1.001
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 RISK_PER_TRADE_USDT = float(os.getenv("RISK_PER_TRADE_USDT", "2.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
@@ -373,11 +375,12 @@ def get_closed_candle_data():
     volume_sma20 = sum(float(k[5]) for k in vol20_history) / len(vol20_history)
     volatility_score = (atr14 / close_price) if atr14 and close_price > 0 else 0.0
     volume_score = (close_volume / volume_sma20) if volume_sma20 > 0 else 0.0
-    market_state = "LOW_ACTIVITY" if (volatility_score < 0.001 or volume_score < 1.0) else "TRADEABLE"
+    market_state = "LOW_ACTIVITY" if (volatility_score < 0.001 or volume_score < MIN_VOLUME_SCORE) else "TRADEABLE"
     return {
         "close_time": close_time,
         "close_price": close_price,
         "close_volume": close_volume,
+        "volume_score": volume_score,
         "highest_high": max(float(c[2]) for c in breakout_history),
         "lowest_low": min(float(c[3]) for c in breakout_history),
         "avg_volume": sum(float(c[5]) for c in volume_history) / len(volume_history),
@@ -606,31 +609,27 @@ while True:
         log_event(f"[MARKET] {last_market_state}")
 
         trend, ema50, ema200 = get_trend_state()
-        long_breakout = candle["close_price"] > candle["highest_high"]
-        short_breakdown = candle["close_price"] < candle["lowest_low"]
-        vol_ok = candle["close_volume"] >= candle["avg_volume"] * VOLUME_MULTIPLIER
-        long_signal = long_breakout and vol_ok and trend == "BULL"
-        short_signal = short_breakdown and vol_ok and trend == "BEAR"
+        long_breakout = candle["close_price"] > candle["highest_high"] * MICRO_BREAKOUT_FACTOR
+        short_breakdown = candle["close_price"] < candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
+        vol_ok = candle["volume_score"] >= MIN_VOLUME_SCORE
+        long_signal = long_breakout and vol_ok
+        short_signal = short_breakdown and vol_ok
+        trend_aligned = (long_signal and trend == "BULL") or (short_signal and trend == "BEAR")
 
         if is_in_position(active_trade):
             last_reason = "in_position"
         elif not vol_ok:
             last_reason = "low_volume"
-        elif trend not in {"BULL", "BEAR"}:
-            last_reason = "trend_filter_blocked"
         elif not long_breakout and not short_breakdown:
             last_reason = "no_breakout"
-        elif long_breakout and trend != "BULL":
-            last_reason = "trend_filter_blocked"
-        elif short_breakdown and trend != "BEAR":
-            last_reason = "trend_filter_blocked"
         else:
-            last_reason = "breakout + volume + trend"
+            last_reason = "breakout + volume"
 
         if (long_signal or short_signal) and not is_in_position(active_trade):
             side = "LONG" if long_signal else "SHORT"
             last_signal = side
-            log_event(f"Signal confirmed: side={side} breakout+volume+trend.")
+            trend_note = " trend_aligned" if trend_aligned else ""
+            log_event(f"[ENTRY] breakout detected (volume ok, trend optional) side={side}{trend_note}")
             trade = place_trade(side)
             if trade:
                 trade_times.append(int(time.time() * 1000))
