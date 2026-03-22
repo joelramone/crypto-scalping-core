@@ -6,6 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -51,12 +52,13 @@ RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_LOG_FILE = RUNTIME_DIR / "trades_log.json"
 CANDLES_FILE = RUNTIME_DIR / "candles.json"
+recent_closed_klines_cache: List[List[Any]] = []
 
 
 def ensure_runtime_files():
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     if not TRADES_LOG_FILE.exists():
-        TRADES_LOG_FILE.write_text("[]", encoding="utf-8")
+        safe_write_json(TRADES_LOG_FILE, [])
 
 
 recent_events = deque(maxlen=50)
@@ -72,7 +74,7 @@ def log_event(message: str):
     recent_events.append(line)
 
 
-def safe_float(value):
+def safe_float(value: Any) -> Optional[float]:
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -154,20 +156,21 @@ def round_down_to_step(value: float, step: float) -> float:
     return float((d(value) / d(step)).to_integral_value(rounding=ROUND_DOWN) * d(step))
 
 
-def load_trade_log():
+def load_trade_log() -> List[Dict[str, Any]]:
     if not TRADES_LOG_FILE.exists():
         return []
     try:
         data = json.loads(TRADES_LOG_FILE.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError) as exc:
+        log_event(f"[WARN] Could not read {TRADES_LOG_FILE}: {exc}")
         return []
 
 
-def append_trade_log(trade):
+def append_trade_log(trade: Dict[str, Any]):
     rows = load_trade_log()
     rows.append(trade)
-    TRADES_LOG_FILE.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    safe_write_json(TRADES_LOG_FILE, rows)
 
 
 def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float):
@@ -358,61 +361,46 @@ def ms_to_utc_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def safe_write_json(path: Path, payload):
+def safe_write_json(path: Path, payload: Any):
     try:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         log_event(f"[WARN] Could not write {path}: {exc}")
 
 
-def build_trade_markers(active_trade):
+def build_trade_markers(active_trade: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     markers = []
     for trade in load_trade_log()[-200:]:
         timestamp = trade.get("timestamp")
         side = trade.get("side")
         result = trade.get("result")
-        if timestamp and side in {"LONG", "SHORT"}:
-            markers.append(
-                {
-                    "time": timestamp,
-                    "position": "belowBar" if side == "LONG" else "aboveBar",
-                    "color": "green" if side == "LONG" else "red",
-                    "shape": "arrowUp" if side == "LONG" else "arrowDown",
-                    "text": side,
-                }
-            )
-        if timestamp and result in {"WIN", "LOSS"}:
-            markers.append(
-                {
-                    "time": timestamp,
-                    "position": "aboveBar" if result == "WIN" else "belowBar",
-                    "color": "blue" if result == "WIN" else "orange",
-                    "shape": "circle",
-                    "text": result,
-                }
-            )
+        exit_price = safe_float(trade.get("exit_price"))
+        entry_price = safe_float(trade.get("entry_price"))
+        if timestamp and side in {"LONG", "SHORT"} and entry_price is not None:
+            markers.append({"time": timestamp, "side": side, "kind": "ENTRY", "price": entry_price})
+        if timestamp and result in {"WIN", "LOSS"} and exit_price is not None:
+            markers.append({"time": timestamp, "side": side, "kind": result, "price": exit_price})
 
     if active_trade and active_trade.get("entry_time_ms"):
         side = active_trade.get("side")
-        if side in {"LONG", "SHORT"}:
+        entry_price = safe_float(active_trade.get("entry_price"))
+        if side in {"LONG", "SHORT"} and entry_price is not None:
             markers.append(
-                {
-                    "time": ms_to_utc_iso(int(active_trade["entry_time_ms"])),
-                    "position": "belowBar" if side == "LONG" else "aboveBar",
-                    "color": "green" if side == "LONG" else "red",
-                    "shape": "arrowUp" if side == "LONG" else "arrowDown",
-                    "text": side,
-                }
+                {"time": ms_to_utc_iso(int(active_trade["entry_time_ms"])), "side": side, "kind": "ENTRY", "price": entry_price}
             )
     return markers
 
 
-def export_candles_snapshot(active_trade):
-    klines = call_with_time_sync("futures_klines(chart)", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=201)
-    if len(klines) < 2:
+def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]):
+    global recent_closed_klines_cache
+    closed_klines = recent_closed_klines_cache[-200:]
+    if not closed_klines:
+        klines = call_with_time_sync("futures_klines(chart)", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=201)
+        if len(klines) < 2:
+            return
+        closed_klines = klines[:-1][-200:]
+    if len(closed_klines) < 2:
         return
-
-    closed_klines = klines[:-1][-200:]
     closes = [float(k[4]) for k in closed_klines]
     ema_fast_series = calculate_ema_series(closes, EMA_FAST)
     ema_slow_series = calculate_ema_series(closes, EMA_SLOW)
@@ -483,10 +471,12 @@ def get_trend_state():
 
 
 def get_closed_candle_data():
+    global recent_closed_klines_cache
     max_lookback = max(LOOKBACK, VOLUME_LOOKBACK, 20)
-    klines = call_with_time_sync("futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=CANDLE_LIMIT)
+    klines = call_with_time_sync("futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=250)
     if len(klines) < max_lookback + 2:
         return None
+    recent_closed_klines_cache = klines[:-1]
     closed = klines[-2]
     breakout_history = klines[-(LOOKBACK + 2):-2]
     volume_history = klines[-(VOLUME_LOOKBACK + 2):-2]

@@ -1,4 +1,5 @@
 Flask
+plotly
 python-binance
 python-dotenv
 pandas
