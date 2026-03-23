@@ -602,6 +602,26 @@ def place_trade(side: str):
     }
 
 
+in_position = False
+position_entry_price: Optional[float] = None
+position_side: Optional[str] = None
+
+
+def execute_trade(side: str, entry_price: float) -> Optional[Dict[str, Any]]:
+    global in_position, position_entry_price, position_side
+    log_event(f"[DEBUG] requested_entry_price={entry_price:.2f}")
+    trade = place_trade(side)
+    executing_trade = trade is not None
+    log_event(f"[DEBUG] executing_trade={executing_trade}")
+    if not trade:
+        return None
+    in_position = True
+    position_entry_price = float(trade["entry_price"])
+    position_side = side
+    log_event(f"[EXECUTION] OPEN {side} at {position_entry_price:.2f}")
+    return trade
+
+
 ensure_runtime_files()
 log_event("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
 if VALIDATION_MODE:
@@ -609,7 +629,7 @@ if VALIDATION_MODE:
 sync_time_offset()
 ensure_futures_settings()
 
-last_processed_close_time = None
+last_processed_candle_time = None
 trade_times = deque()
 consecutive_losses = 0
 active_trade = None
@@ -665,11 +685,12 @@ while True:
                         paper_usdt_balance,
                     )
                     active_trade = None
+                    in_position = False
                 else:
                     log_event(
                         f"Paper trade still active. price={last_price:.2f} stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
                     )
-                    export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                    export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
             else:
@@ -685,21 +706,22 @@ while True:
                     update_metrics(net_pnl_value, gross_pnl, fees, usdt_now)
                     log_trade_exit(active_trade["side"], active_trade["entry_price"], get_last_price(), active_trade["qty"], gross_pnl, fees, net_pnl_value, usdt_now)
                     active_trade = None
+                    in_position = False
                 else:
                     log_event("Futures trade still active. Waiting for stop/tp trigger...")
-                    export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                    export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
 
             if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
                 log_event("3 consecutive losses reached. Shutting down.")
-                export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+                export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                 break
 
         if len(trade_times) >= MAX_TRADES_PER_HOUR:
             last_reason = "trade_limit"
             log_event("Trade limit reached (3 per hour). Waiting...")
-            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
@@ -707,18 +729,19 @@ while True:
         if candle is None:
             last_reason = "not_enough_candles"
             log_event("Not enough candle data yet.")
-            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
-        if candle["close_time"] == last_processed_close_time:
+        candle_time = candle["close_time"]
+        log_event(f"[DEBUG] last_processed_candle={last_processed_candle_time}")
+        if candle_time == last_processed_candle_time:
             last_reason = "no_new_candle"
             log_event("No new closed candle.")
-            export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+            export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
 
-        last_processed_close_time = candle["close_time"]
         last_market_state = candle["market_state"]
         log_event(f"[MARKET] {last_market_state}")
 
@@ -729,9 +752,14 @@ while True:
         long_signal = long_breakout and vol_ok
         short_signal = short_breakdown and vol_ok
         trend_aligned = (long_signal and trend == "BULL") or (short_signal and trend == "BEAR")
+        signal_detected = long_signal or short_signal
+        log_event(f"[DEBUG] signal_detected={signal_detected}")
 
         if is_in_position(active_trade):
             last_reason = "in_position"
+            in_position = True
+        elif len(trade_times) >= MAX_TRADES_PER_HOUR:
+            last_reason = "trade_limit"
         elif not vol_ok:
             last_reason = "low_volume"
         elif not long_breakout and not short_breakdown:
@@ -739,24 +767,27 @@ while True:
         else:
             last_reason = "breakout + volume"
 
-        if (long_signal or short_signal) and not is_in_position(active_trade):
+        if signal_detected and not in_position and len(trade_times) < MAX_TRADES_PER_HOUR:
             side = "LONG" if long_signal else "SHORT"
             last_signal = side
             trend_note = " trend_aligned" if trend_aligned else ""
             log_event(f"[ENTRY] breakout detected (volume ok, trend optional) side={side}{trend_note}")
-            trade = place_trade(side)
+            trade = execute_trade(side, candle["close_price"])
             if trade:
                 trade_times.append(int(time.time() * 1000))
                 active_trade = trade
                 log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
         else:
+            log_event("[DEBUG] executing_trade=False")
             last_signal = "NONE"
             log_event(f"No trade: {last_reason}")
 
-        print_heartbeat(last_processed_close_time, len(trade_times), consecutive_losses, active_trade)
-        export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+        last_processed_candle_time = candle_time
+        log_event(f"[DEBUG] last_processed_candle={last_processed_candle_time}")
+        print_heartbeat(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade)
+        export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
     except Exception as e:
         log_event(f"Error: {e}")
-        export_runtime_state(last_processed_close_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
+        export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
