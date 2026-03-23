@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -524,43 +524,71 @@ def print_heartbeat(last_closed_candle_ms: Optional[int], trades_this_hour: int,
     )
 
 
-def place_trade(side: str) -> Optional[Dict[str, Any]]:
-    global paper_usdt_balance
-    usdt_before = get_usdt_balance()
-    close_price = get_last_price()
+def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tuple[Optional[Dict[str, Any]], str]:
+    if current_price <= 0:
+        return None, "skipped_price_invalid"
     is_long = side == "LONG"
-    entry_price = close_price * (1 + SIMULATED_SLIPPAGE) if is_long else close_price * (1 - SIMULATED_SLIPPAGE)
+    entry_price = current_price * (1 + SIMULATED_SLIPPAGE) if is_long else current_price * (1 - SIMULATED_SLIPPAGE)
+    if entry_price <= 0:
+        return None, "skipped_price_invalid"
     stop_price = entry_price * (1 - STOP_PCT) if is_long else entry_price * (1 + STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT) if is_long else entry_price * (1 - TAKE_PROFIT_PCT)
     position_notional_usdt = RISK_PER_TRADE_USDT / (STOP_PCT * FUTURES_LEVERAGE)
     qty_raw = position_notional_usdt / entry_price
     qty = round_down_to_step(qty_raw, qty_step)
+    if qty <= 0:
+        return None, "skipped_qty_invalid"
     stop_price = round_down_to_step(stop_price, price_tick)
     take_profit_price = round_down_to_step(take_profit_price, price_tick)
-
     if qty < min_qty:
         qty = min_qty
     if min_notional and qty * entry_price < min_notional:
-        return None
-
+        return None, "skipped_qty_invalid"
     notional = qty * entry_price
     if (notional / FUTURES_LEVERAGE) > usdt_before:
-        return None
-
+        return None, "skipped_qty_invalid"
     estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
+    return {
+        "current_price": current_price,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "take_profit_price": take_profit_price,
+        "qty": qty,
+        "notional": notional,
+        "estimated_entry_fee": estimated_entry_fee,
+        "estimated_exit_fee": estimated_exit_fee,
+    }, ""
+
+
+def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any]], str, float]:
+    global paper_usdt_balance
+    usdt_before = get_usdt_balance()
+    plan, plan_error = build_trade_plan(side, current_price, usdt_before)
+    if plan is None:
+        return None, plan_error, 0.0
+
+    is_long = side == "LONG"
+    entry_price = float(plan["entry_price"])
+    stop_price = float(plan["stop_price"])
+    take_profit_price = float(plan["take_profit_price"])
+    qty = float(plan["qty"])
+    notional = float(plan["notional"])
+    estimated_entry_fee = float(plan["estimated_entry_fee"])
+    estimated_exit_fee = float(plan["estimated_exit_fee"])
 
     if PAPER_MODE:
         if estimated_entry_fee > paper_usdt_balance:
-            return None
+            return None, "skipped_qty_invalid", qty
         paper_usdt_balance -= estimated_entry_fee
         log_event(
-            f"[PAPER ENTRY] close={close_price:.2f} slipped_entry={entry_price:.2f} qty={qty:.6f} side={side} notional={notional:.4f} "
-            f"entry_fee={estimated_entry_fee:.4f} stop={stop_price:.2f} tp={take_profit_price:.2f} paper_usdt_balance={paper_usdt_balance:.4f}"
+            f"[PAPER ENTRY] side={side} entry={entry_price:.2f} qty={qty:.6f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
+            f"notional={notional:.4f} entry_fee={estimated_entry_fee:.4f} paper_usdt_balance={paper_usdt_balance:.4f}"
         )
         return {
             "entry_time_ms": int(time.time() * 1000),
             "position_size": qty,
+            "position_qty": qty,
             "position_notional": notional,
             "side": side,
             "entry_price": entry_price,
@@ -569,7 +597,7 @@ def place_trade(side: str) -> Optional[Dict[str, Any]]:
             "take_profit_price": take_profit_price,
             "usdt_before": usdt_before,
             "estimated_exit_fee": estimated_exit_fee,
-        }
+        }, "", qty
 
     entry_order = call_with_time_sync(
         "futures_create_order(MARKET)",
@@ -602,7 +630,7 @@ def place_trade(side: str) -> Optional[Dict[str, Any]]:
         workingType=WORKING_TYPE,
     )
     log_event(
-        f"[REAL ENTRY] close={close_price:.2f} entry={entry_price:.2f} qty={qty:.6f} side={side} stop={stop_price:.2f} tp={take_profit_price:.2f}"
+        f"[REAL ENTRY] close={current_price:.2f} entry={entry_price:.2f} qty={qty:.6f} side={side} stop={stop_price:.2f} tp={take_profit_price:.2f}"
     )
     return {
         "entry_order": entry_order,
@@ -613,7 +641,7 @@ def place_trade(side: str) -> Optional[Dict[str, Any]]:
         "stop_price": stop_price,
         "tp_price": take_profit_price,
         "usdt_before": usdt_before,
-    }
+    }, "", qty
 
 
 in_position = False
@@ -624,24 +652,32 @@ position_tp_price: Optional[float] = None
 position_side: Optional[str] = None
 
 
-def execute_trade(side: str, entry_price: float) -> Optional[Dict[str, Any]]:
+def execute_trade(side: str, entry_price: float) -> Tuple[Optional[Dict[str, Any]], str]:
     global in_position, executing_trade, position_entry_price, position_stop_price, position_tp_price, position_side
+    log_event("[DEBUG] entering execution path")
+    log_event(f"[DEBUG] in_position before = {in_position}")
     log_event(f"[DEBUG] requested_entry_price={entry_price:.2f}")
     executing_trade = True
     log_event("[DEBUG] executing_trade=True")
     try:
-        trade = place_trade(side)
-    except Exception:
+        trade, skip_reason, qty = place_trade(side, entry_price)
+        log_event(f"[DEBUG] qty calculated = {qty:.6f}")
+    except Exception as exc:
         executing_trade = False
         log_event("[DEBUG] executing_trade=False")
-        log_event("[DEBUG] skipped_execution_error")
-        return None
+        log_event(f"[DEBUG] skipped_execution_exception: {type(exc).__name__}: {exc}")
+        log_event(f"[DEBUG] in_position after = {in_position}")
+        log_event("[DEBUG] execution success = False")
+        return None, "skipped_execution_exception"
 
     if not trade:
         executing_trade = False
         log_event("[DEBUG] executing_trade=False")
-        log_event("[DEBUG] skipped_qty_invalid")
-        return None
+        reason = skip_reason or "skipped_qty_invalid"
+        log_event(f"[DEBUG] {reason}")
+        log_event(f"[DEBUG] in_position after = {in_position}")
+        log_event("[DEBUG] execution success = False")
+        return None, reason
 
     in_position = True
     position_entry_price = float(trade["entry_price"])
@@ -650,8 +686,10 @@ def execute_trade(side: str, entry_price: float) -> Optional[Dict[str, Any]]:
     position_side = side
     executing_trade = False
     log_event("[DEBUG] executing_trade=False")
+    log_event(f"[DEBUG] in_position after = {in_position}")
+    log_event("[DEBUG] execution success = True")
     log_event(f"[EXECUTION] OPEN {side} at {position_entry_price:.2f}")
-    return trade
+    return trade, ""
 
 
 def add_signal_marker(side: str, price: float, candle_time_ms: int) -> None:
@@ -779,6 +817,7 @@ while True:
 
         if skipped_old_candle:
             last_reason = "no_new_candle"
+            log_event("[DEBUG] skipped_old_candle")
             log_event("No new closed candle.")
             log_event(f"[DEBUG] last_processed_candle_after={last_processed_candle_time}")
             export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
@@ -831,13 +870,14 @@ while True:
         else:
             side = "LONG" if long_signal else "SHORT"
             last_reason = "breakout + volume"
-            trade = execute_trade(side, candle["close_price"])
+            log_event("[DEBUG] signal accepted")
+            trade, execution_error = execute_trade(side, candle["close_price"])
             if trade:
                 trade_times.append(int(time.time() * 1000))
                 active_trade = trade
                 log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
             else:
-                execution_skip_reason = "skipped_qty_invalid"
+                execution_skip_reason = execution_error or "skipped_qty_invalid"
 
         if execution_skip_reason:
             log_event(f"[DEBUG] {execution_skip_reason}")
@@ -853,7 +893,7 @@ while True:
         time.sleep(POLL_SECONDS)
     except Exception as exc:
         if executing_trade:
-            log_event("[DEBUG] skipped_execution_error")
+            log_event("[DEBUG] skipped_execution_exception")
             executing_trade = False
             log_event("[DEBUG] executing_trade=False")
         log_event(f"Error: {exc}")
