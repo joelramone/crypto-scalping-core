@@ -26,7 +26,8 @@ EMPTY_CANDLES_PAYLOAD: Dict[str, Any] = {
         "stop_price": None,
         "take_profit_price": None,
     },
-    "markers": [],
+    "signal_markers": [],
+    "trade_markers": [],
 }
 
 
@@ -44,6 +45,44 @@ def to_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _add_marker_traces(fig: go.Figure, markers: List[Dict[str, Any]], styles: Dict[str, Dict[str, Any]], default_name: str) -> None:
+    if not markers:
+        return
+
+    marker_frame = pd.DataFrame(markers)
+    if marker_frame.empty:
+        return
+
+    marker_frame["time"] = pd.to_datetime(marker_frame["time"], utc=True, errors="coerce")
+    marker_frame["price"] = marker_frame["price"].map(to_float)
+    marker_frame = marker_frame.dropna(subset=["time", "price"])
+    if marker_frame.empty:
+        return
+
+    for kind, group in marker_frame.groupby("kind"):
+        style = styles.get(kind)
+        if not style:
+            continue
+        name = style.get("name", default_name)
+        fig.add_trace(
+            go.Scatter(
+                x=group["time"],
+                y=group["price"],
+                mode="markers+text",
+                text=group.get("side", pd.Series([""] * len(group))).fillna("").astype(str).radd(name.split()[0] + " "),
+                textposition="top center",
+                marker={
+                    "color": style["color"],
+                    "size": style["size"],
+                    "symbol": style["symbol"],
+                    "opacity": style["opacity"],
+                    "line": {"color": style.get("line_color", style["color"]), "width": style.get("line_width", 1)},
+                },
+                name=name,
+            )
+        )
 
 
 def build_chart_html(candles_payload: Dict[str, Any]) -> str:
@@ -94,32 +133,95 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
             )
         )
 
-    marker_styles: Dict[str, Dict[str, Any]] = {
-        "ENTRY": {"color": "#a78bfa", "symbol": "diamond", "size": 11},
-        "WIN": {"color": "#22c55e", "symbol": "triangle-up", "size": 12},
-        "LOSS": {"color": "#ef4444", "symbol": "triangle-down", "size": 12},
+    signal_styles: Dict[str, Dict[str, Any]] = {
+        "SIGNAL_LONG": {
+            "name": "Signal LONG",
+            "color": "rgba(34, 197, 94, 0.35)",
+            "symbol": "circle",
+            "size": 9,
+            "opacity": 0.45,
+            "line_color": "rgba(34, 197, 94, 0.45)",
+            "line_width": 1,
+        },
+        "SIGNAL_SHORT": {
+            "name": "Signal SHORT",
+            "color": "rgba(239, 68, 68, 0.35)",
+            "symbol": "circle",
+            "size": 9,
+            "opacity": 0.45,
+            "line_color": "rgba(239, 68, 68, 0.45)",
+            "line_width": 1,
+        },
     }
 
-    markers = candles_payload.get("markers", [])
-    if markers:
-        marker_frame = pd.DataFrame(markers)
-        marker_frame["time"] = pd.to_datetime(marker_frame["time"], utc=True)
-        marker_frame["price"] = marker_frame["price"].map(to_float)
-        marker_frame = marker_frame.dropna(subset=["price"])
+    trade_styles: Dict[str, Dict[str, Any]] = {
+        "EXECUTED_ENTRY_LONG": {
+            "name": "Executed LONG",
+            "color": "rgba(34, 197, 94, 1.0)",
+            "symbol": "diamond",
+            "size": 12,
+            "opacity": 1.0,
+            "line_color": "rgba(15, 23, 42, 1.0)",
+            "line_width": 1,
+        },
+        "EXECUTED_ENTRY_SHORT": {
+            "name": "Executed SHORT",
+            "color": "rgba(239, 68, 68, 1.0)",
+            "symbol": "diamond",
+            "size": 12,
+            "opacity": 1.0,
+            "line_color": "rgba(15, 23, 42, 1.0)",
+            "line_width": 1,
+        },
+        "EXIT_WIN": {
+            "name": "Exit WIN",
+            "color": "rgba(34, 197, 94, 1.0)",
+            "symbol": "triangle-up",
+            "size": 13,
+            "opacity": 1.0,
+            "line_color": "rgba(15, 23, 42, 1.0)",
+            "line_width": 1,
+        },
+        "EXIT_LOSS": {
+            "name": "Exit LOSS",
+            "color": "rgba(239, 68, 68, 1.0)",
+            "symbol": "triangle-down",
+            "size": 13,
+            "opacity": 1.0,
+            "line_color": "rgba(15, 23, 42, 1.0)",
+            "line_width": 1,
+        },
+    }
 
-        for kind, group in marker_frame.groupby("kind"):
-            style = marker_styles.get(kind, {"color": "#f8fafc", "symbol": "circle", "size": 10})
-            fig.add_trace(
-                go.Scatter(
-                    x=group["time"],
-                    y=group["price"],
-                    mode="markers+text",
-                    text=(group["side"].fillna("") + " " + group["kind"].fillna("")).str.strip(),
-                    textposition="top center",
-                    marker={"color": style["color"], "size": style["size"], "symbol": style["symbol"]},
-                    name=f"{kind} markers",
-                )
-            )
+    signal_markers = candles_payload.get("signal_markers", [])
+    normalized_signal_markers: List[Dict[str, Any]] = []
+    for marker in signal_markers:
+        side = str(marker.get("side", "")).upper()
+        normalized_signal_markers.append(
+            {
+                "time": marker.get("time"),
+                "price": marker.get("price"),
+                "side": side,
+                "kind": f"SIGNAL_{side}",
+            }
+        )
+    _add_marker_traces(fig, normalized_signal_markers, signal_styles, "Signal")
+
+    trade_markers = candles_payload.get("trade_markers", [])
+    normalized_trade_markers: List[Dict[str, Any]] = []
+    for marker in trade_markers:
+        side = str(marker.get("side", "")).upper()
+        kind = str(marker.get("kind", "")).upper()
+        normalized_kind = f"EXECUTED_ENTRY_{side}" if kind == "EXECUTED_ENTRY" else kind
+        normalized_trade_markers.append(
+            {
+                "time": marker.get("time"),
+                "price": marker.get("price"),
+                "side": side,
+                "kind": normalized_kind,
+            }
+        )
+    _add_marker_traces(fig, normalized_trade_markers, trade_styles, "Trade")
 
     levels = candles_payload.get("levels", {})
     for key, color, label in [
@@ -178,6 +280,9 @@ TEMPLATE = """
     .event-item { padding:4px 0; border-bottom:1px dashed #1f2937; font-size: 13px; }
     .event-item:last-child { border-bottom:none; }
     .empty-state { background:#111827; border:1px dashed #334155; color:#94a3b8; padding:18px; border-radius:10px; }
+    .legend { margin: 12px 0 2px; display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:#cbd5e1; }
+    .legend-item { display:flex; align-items:center; gap:6px; }
+    .legend-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
   </style>
 </head>
 <body>
@@ -187,6 +292,15 @@ TEMPLATE = """
       <div class="muted">Mode: {{ mode }} | Symbol: {{ symbol }} | Timeframe: {{ timeframe }}</div>
     </div>
     <div class="muted">Updated: {{ updated_at }}</div>
+  </div>
+
+  <div class="legend">
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(34, 197, 94, 0.45);"></span>Signal LONG</span>
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(239, 68, 68, 0.45);"></span>Signal SHORT</span>
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(34, 197, 94, 1.0);"></span>Executed LONG</span>
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(239, 68, 68, 1.0);"></span>Executed SHORT</span>
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(34, 197, 94, 1.0);"></span>Exit WIN</span>
+    <span class="legend-item"><span class="legend-dot" style="background: rgba(239, 68, 68, 1.0);"></span>Exit LOSS</span>
   </div>
 
   <div class="section">{{ chart_html|safe }}</div>

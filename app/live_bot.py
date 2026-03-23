@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
@@ -53,9 +53,10 @@ DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_LOG_FILE = RUNTIME_DIR / "trades_log.json"
 CANDLES_FILE = RUNTIME_DIR / "candles.json"
 recent_closed_klines_cache: List[List[Any]] = []
+recent_signal_markers: Deque[Dict[str, Any]] = deque(maxlen=400)
 
 
-def ensure_runtime_files():
+def ensure_runtime_files() -> None:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     if not TRADES_LOG_FILE.exists():
         safe_write_json(TRADES_LOG_FILE, [])
@@ -68,7 +69,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def log_event(message: str):
+def log_event(message: str) -> None:
     line = f"[{utc_now_iso()}] {message}"
     print(message)
     recent_events.append(line)
@@ -117,36 +118,36 @@ def get_mode_label() -> str:
     return "futures_real"
 
 
-def call_api(label, fn, *args, **kwargs):
+def call_api(label: str, fn, *args: Any, **kwargs: Any) -> Any:
     start = time.time()
     try:
         res = fn(*args, **kwargs)
         print(f"[api-ok] {label} {time.time() - start:.2f}s")
         return res
-    except Exception as e:
-        print(f"[api-err] {label} {time.time() - start:.2f}s {type(e).__name__}: {e}")
+    except Exception as exc:
+        print(f"[api-err] {label} {time.time() - start:.2f}s {type(exc).__name__}: {exc}")
         raise
 
 
-def sync_time_offset():
+def sync_time_offset() -> None:
     server_ms = call_api("get_server_time", client.get_server_time)["serverTime"]
     local_ms = int(time.time() * 1000)
     client.timestamp_offset = server_ms - local_ms
     log_event(f"Binance time offset synced: {client.timestamp_offset} ms")
 
 
-def call_with_time_sync(label, fn, *args, **kwargs):
+def call_with_time_sync(label: str, fn, *args: Any, **kwargs: Any) -> Any:
     try:
         return call_api(label, fn, *args, **kwargs)
-    except BinanceAPIException as e:
-        if e.code == -1021:
+    except BinanceAPIException as exc:
+        if exc.code == -1021:
             log_event("Received -1021 timestamp error. Resyncing time and retrying once...")
             sync_time_offset()
             return call_api(f"{label} (retry)", fn, *args, **kwargs)
         raise
 
 
-def d(v) -> Decimal:
+def d(v: Any) -> Decimal:
     return Decimal(str(v))
 
 
@@ -167,13 +168,13 @@ def load_trade_log() -> List[Dict[str, Any]]:
         return []
 
 
-def append_trade_log(trade: Dict[str, Any]):
+def append_trade_log(trade: Dict[str, Any]) -> None:
     rows = load_trade_log()
     rows.append(trade)
     safe_write_json(TRADES_LOG_FILE, rows)
 
 
-def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float):
+def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float) -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct
     total_trades += 1
     if net_pnl_value >= 0:
@@ -193,14 +194,14 @@ def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_
     max_drawdown_pct = max(max_drawdown_pct, dd)
 
 
-def metrics_snapshot():
+def metrics_snapshot() -> Any:
     win_rate = (wins / total_trades) * 100 if total_trades > 0 else None
     profit_factor = (gross_profit_sum / abs(gross_loss_sum)) if losses > 0 and gross_loss_sum != 0 else None
     expectancy = (net_pnl_total / total_trades) if total_trades > 0 else None
     return win_rate, profit_factor, expectancy
 
 
-def export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state):
+def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hour: int, losses_in_row: int, active_trade: Optional[Dict[str, Any]], market_state: str) -> None:
     win_rate, profit_factor, expectancy = metrics_snapshot()
     balance = get_usdt_balance()
     state = {
@@ -241,7 +242,7 @@ def export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_ro
     safe_write_json(DASHBOARD_STATE_FILE, state)
 
 
-def log_trade_exit(side, entry_price, exit_price, qty, gross_pnl, fees, net_pnl_value, balance_after):
+def log_trade_exit(side: str, entry_price: float, exit_price: float, qty: float, gross_pnl: float, fees: float, net_pnl_value: float, balance_after: float) -> None:
     global last_trade_snapshot
     result = "WIN" if net_pnl_value >= 0 else "LOSS"
     trade = {
@@ -283,13 +284,13 @@ if qty_step == 0.0 or price_tick == 0.0:
 paper_usdt_balance = CAPITAL_USDT
 
 
-def ensure_futures_settings():
+def ensure_futures_settings() -> None:
     if PAPER_MODE:
         return
     try:
         call_with_time_sync("futures_change_margin_type", client.futures_change_margin_type, symbol=SYMBOL, marginType=MARGIN_TYPE)
-    except BinanceAPIException as e:
-        if e.code != -4046:
+    except BinanceAPIException as exc:
+        if exc.code != -4046:
             raise
     call_with_time_sync("futures_change_leverage", client.futures_change_leverage, symbol=SYMBOL, leverage=FUTURES_LEVERAGE)
 
@@ -309,13 +310,13 @@ def get_position_amt() -> float:
     return float(positions[0]["positionAmt"]) if positions else 0.0
 
 
-def is_in_position(active_trade=None) -> bool:
+def is_in_position(active_trade: Optional[Dict[str, Any]] = None) -> bool:
     if PAPER_MODE:
         return active_trade is not None
     return abs(get_position_amt()) > 0
 
 
-def calculate_ema(prices, period: int):
+def calculate_ema(prices: List[float], period: int) -> Optional[float]:
     if len(prices) < period:
         return None
     multiplier = 2 / (period + 1)
@@ -325,14 +326,14 @@ def calculate_ema(prices, period: int):
     return ema
 
 
-def calculate_atr(klines, period=14):
+def calculate_atr(klines: List[List[Any]], period: int = 14) -> Optional[float]:
     if len(klines) < period + 1:
         return None
-    trs = []
-    for i in range(1, len(klines)):
-        high = float(klines[i][2])
-        low = float(klines[i][3])
-        prev_close = float(klines[i - 1][4])
+    trs: List[float] = []
+    for idx in range(1, len(klines)):
+        high = float(klines[idx][2])
+        low = float(klines[idx][3])
+        prev_close = float(klines[idx - 1][4])
         trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
     return sum(trs[-period:]) / period
 
@@ -343,14 +344,12 @@ last_trend_ema_fast = None
 last_trend_ema_slow = None
 
 
-
-
-def calculate_ema_series(prices, period: int):
+def calculate_ema_series(prices: List[float], period: int) -> List[Optional[float]]:
     if len(prices) < period:
         return []
     multiplier = 2 / (period + 1)
     ema = sum(prices[:period]) / period
-    result = [None] * (period - 1) + [ema]
+    result: List[Optional[float]] = [None] * (period - 1) + [ema]
     for price in prices[period:]:
         ema = (price - ema) * multiplier + ema
         result.append(ema)
@@ -361,15 +360,19 @@ def ms_to_utc_iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def safe_write_json(path: Path, payload: Any):
+def safe_write_json(path: Path, payload: Any) -> None:
     try:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         log_event(f"[WARN] Could not write {path}: {exc}")
 
 
+def build_signal_markers() -> List[Dict[str, Any]]:
+    return list(recent_signal_markers)
+
+
 def build_trade_markers(active_trade: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    markers = []
+    markers: List[Dict[str, Any]] = []
     for trade in load_trade_log()[-200:]:
         timestamp = trade.get("timestamp")
         side = trade.get("side")
@@ -377,21 +380,21 @@ def build_trade_markers(active_trade: Optional[Dict[str, Any]]) -> List[Dict[str
         exit_price = safe_float(trade.get("exit_price"))
         entry_price = safe_float(trade.get("entry_price"))
         if timestamp and side in {"LONG", "SHORT"} and entry_price is not None:
-            markers.append({"time": timestamp, "side": side, "kind": "ENTRY", "price": entry_price})
-        if timestamp and result in {"WIN", "LOSS"} and exit_price is not None:
-            markers.append({"time": timestamp, "side": side, "kind": result, "price": exit_price})
+            markers.append({"time": timestamp, "side": side, "kind": "EXECUTED_ENTRY", "price": entry_price})
+        if timestamp and side in {"LONG", "SHORT"} and result in {"WIN", "LOSS"} and exit_price is not None:
+            markers.append({"time": timestamp, "side": side, "kind": f"EXIT_{result}", "price": exit_price})
 
     if active_trade and active_trade.get("entry_time_ms"):
         side = active_trade.get("side")
         entry_price = safe_float(active_trade.get("entry_price"))
         if side in {"LONG", "SHORT"} and entry_price is not None:
             markers.append(
-                {"time": ms_to_utc_iso(int(active_trade["entry_time_ms"])), "side": side, "kind": "ENTRY", "price": entry_price}
+                {"time": ms_to_utc_iso(int(active_trade["entry_time_ms"])), "side": side, "kind": "EXECUTED_ENTRY", "price": entry_price}
             )
     return markers
 
 
-def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]):
+def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]) -> None:
     global recent_closed_klines_cache
     closed_klines = recent_closed_klines_cache[-200:]
     if not closed_klines:
@@ -401,13 +404,14 @@ def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]):
         closed_klines = klines[:-1][-200:]
     if len(closed_klines) < 2:
         return
+
     closes = [float(k[4]) for k in closed_klines]
     ema_fast_series = calculate_ema_series(closes, EMA_FAST)
     ema_slow_series = calculate_ema_series(closes, EMA_SLOW)
 
-    candles = []
-    ema_fast = []
-    ema_slow = []
+    candles: List[Dict[str, Any]] = []
+    ema_fast: List[Dict[str, Any]] = []
+    ema_slow: List[Dict[str, Any]] = []
     for idx, kline in enumerate(closed_klines):
         timestamp = ms_to_utc_iso(int(kline[0]))
         candles.append(
@@ -427,7 +431,7 @@ def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]):
         if slow_value is not None:
             ema_slow.append({"time": timestamp, "value": slow_value})
 
-    levels = {"entry_price": None, "stop_price": None, "take_profit_price": None}
+    levels: Dict[str, Optional[float]] = {"entry_price": None, "stop_price": None, "take_profit_price": None}
     if active_trade:
         levels["entry_price"] = safe_float(active_trade.get("entry_price"))
         levels["stop_price"] = safe_float(active_trade.get("stop_price"))
@@ -441,16 +445,18 @@ def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]):
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
         "levels": levels,
-        "markers": build_trade_markers(active_trade),
+        "signal_markers": build_signal_markers(),
+        "trade_markers": build_trade_markers(active_trade),
     }
     safe_write_json(CANDLES_FILE, payload)
 
 
-def export_runtime_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state):
+def export_runtime_state(last_closed_candle_ms: Optional[int], trades_this_hour: int, losses_in_row: int, active_trade: Optional[Dict[str, Any]], market_state: str) -> None:
     export_dashboard_state(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade, market_state)
     export_candles_snapshot(active_trade)
 
-def get_trend_state():
+
+def get_trend_state() -> Any:
     global last_trend_close_time, last_trend_value, last_trend_ema_fast, last_trend_ema_slow
     klines = call_with_time_sync("futures_klines(trend)", client.futures_klines, symbol=SYMBOL, interval=TREND_TIMEFRAME, limit=300)
     if len(klines) < EMA_SLOW + 2:
@@ -470,16 +476,17 @@ def get_trend_state():
     return trend, ema_fast, ema_slow
 
 
-def get_closed_candle_data():
+def get_closed_candle_data() -> Optional[Dict[str, Any]]:
     global recent_closed_klines_cache
     max_lookback = max(LOOKBACK, VOLUME_LOOKBACK, 20)
     klines = call_with_time_sync("futures_klines", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=250)
     if len(klines) < max_lookback + 2:
         return None
+
     recent_closed_klines_cache = klines[:-1]
     closed = klines[-2]
-    breakout_history = klines[-(LOOKBACK + 2):-2]
-    volume_history = klines[-(VOLUME_LOOKBACK + 2):-2]
+    breakout_history = klines[-(LOOKBACK + 2) : -2]
+    volume_history = klines[-(VOLUME_LOOKBACK + 2) : -2]
     vol20_history = klines[-22:-2]
     close_price = float(closed[4])
     close_volume = float(closed[5])
@@ -489,6 +496,7 @@ def get_closed_candle_data():
     volatility_score = (atr14 / close_price) if atr14 and close_price > 0 else 0.0
     volume_score = (close_volume / volume_sma20) if volume_sma20 > 0 else 0.0
     market_state = "LOW_ACTIVITY" if (volatility_score < 0.001 or volume_score < MIN_VOLUME_SCORE) else "TRADEABLE"
+
     return {
         "close_time": close_time,
         "close_price": close_price,
@@ -506,7 +514,7 @@ def get_last_price() -> float:
     return float(ticker["price"])
 
 
-def print_heartbeat(last_closed_candle_ms, trades_this_hour, losses_in_row, active_trade=None):
+def print_heartbeat(last_closed_candle_ms: Optional[int], trades_this_hour: int, losses_in_row: int, active_trade: Optional[Dict[str, Any]] = None) -> None:
     balance = get_usdt_balance()
     pos_amt = active_trade["position_size"] if PAPER_MODE and active_trade else get_position_amt()
     last_closed = datetime.fromtimestamp(last_closed_candle_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if last_closed_candle_ms else "none"
@@ -516,7 +524,7 @@ def print_heartbeat(last_closed_candle_ms, trades_this_hour, losses_in_row, acti
     )
 
 
-def place_trade(side: str):
+def place_trade(side: str) -> Optional[Dict[str, Any]]:
     global paper_usdt_balance
     usdt_before = get_usdt_balance()
     close_price = get_last_price()
@@ -529,13 +537,16 @@ def place_trade(side: str):
     qty = round_down_to_step(qty_raw, qty_step)
     stop_price = round_down_to_step(stop_price, price_tick)
     take_profit_price = round_down_to_step(take_profit_price, price_tick)
+
     if qty < min_qty:
         qty = min_qty
     if min_notional and qty * entry_price < min_notional:
         return None
+
     notional = qty * entry_price
     if (notional / FUTURES_LEVERAGE) > usdt_before:
         return None
+
     estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
 
@@ -590,6 +601,9 @@ def place_trade(side: str):
         reduceOnly=True,
         workingType=WORKING_TYPE,
     )
+    log_event(
+        f"[REAL ENTRY] close={close_price:.2f} entry={entry_price:.2f} qty={qty:.6f} side={side} stop={stop_price:.2f} tp={take_profit_price:.2f}"
+    )
     return {
         "entry_order": entry_order,
         "entry_time_ms": int(time.time() * 1000),
@@ -603,23 +617,54 @@ def place_trade(side: str):
 
 
 in_position = False
+executing_trade = False
 position_entry_price: Optional[float] = None
+position_stop_price: Optional[float] = None
+position_tp_price: Optional[float] = None
 position_side: Optional[str] = None
 
 
 def execute_trade(side: str, entry_price: float) -> Optional[Dict[str, Any]]:
-    global in_position, position_entry_price, position_side
+    global in_position, executing_trade, position_entry_price, position_stop_price, position_tp_price, position_side
     log_event(f"[DEBUG] requested_entry_price={entry_price:.2f}")
-    trade = place_trade(side)
-    executing_trade = trade is not None
-    log_event(f"[DEBUG] executing_trade={executing_trade}")
-    if not trade:
+    executing_trade = True
+    log_event("[DEBUG] executing_trade=True")
+    try:
+        trade = place_trade(side)
+    except Exception:
+        executing_trade = False
+        log_event("[DEBUG] executing_trade=False")
+        log_event("[DEBUG] skipped_execution_error")
         return None
+
+    if not trade:
+        executing_trade = False
+        log_event("[DEBUG] executing_trade=False")
+        log_event("[DEBUG] skipped_qty_invalid")
+        return None
+
     in_position = True
     position_entry_price = float(trade["entry_price"])
+    position_stop_price = safe_float(trade.get("stop_price"))
+    position_tp_price = safe_float(trade.get("take_profit_price", trade.get("tp_price")))
     position_side = side
+    executing_trade = False
+    log_event("[DEBUG] executing_trade=False")
     log_event(f"[EXECUTION] OPEN {side} at {position_entry_price:.2f}")
     return trade
+
+
+def add_signal_marker(side: str, price: float, candle_time_ms: int) -> None:
+    if side not in {"LONG", "SHORT"}:
+        return
+    recent_signal_markers.append(
+        {
+            "time": ms_to_utc_iso(candle_time_ms),
+            "side": side,
+            "kind": f"SIGNAL_{side}",
+            "price": price,
+        }
+    )
 
 
 ensure_runtime_files()
@@ -629,10 +674,10 @@ if VALIDATION_MODE:
 sync_time_offset()
 ensure_futures_settings()
 
-last_processed_candle_time = None
-trade_times = deque()
+last_processed_candle_time: Optional[int] = None
+trade_times: Deque[int] = deque()
 consecutive_losses = 0
-active_trade = None
+active_trade: Optional[Dict[str, Any]] = None
 last_market_state = "TRADEABLE"
 
 while True:
@@ -662,7 +707,7 @@ while True:
                         exit_reason = "WIN"
                         exit_price = active_trade["take_profit_price"] * (1 + SIMULATED_SLIPPAGE)
 
-                if exit_reason:
+                if exit_reason and exit_price is not None:
                     gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"]) if active_trade["side"] == "LONG" else active_trade["position_size"] * (active_trade["entry_price"] - exit_price)
                     exit_fee = active_trade["position_notional"] * FUTURES_TAKER_FEE_RATE
                     total_fees = active_trade["entry_fee"] + exit_fee
@@ -718,13 +763,6 @@ while True:
                 export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                 break
 
-        if len(trade_times) >= MAX_TRADES_PER_HOUR:
-            last_reason = "trade_limit"
-            log_event("Trade limit reached (3 per hour). Waiting...")
-            export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
-            time.sleep(POLL_SECONDS)
-            continue
-
         candle = get_closed_candle_data()
         if candle is None:
             last_reason = "not_enough_candles"
@@ -733,11 +771,16 @@ while True:
             time.sleep(POLL_SECONDS)
             continue
 
-        candle_time = candle["close_time"]
-        log_event(f"[DEBUG] last_processed_candle={last_processed_candle_time}")
-        if candle_time == last_processed_candle_time:
+        candle_time = int(candle["close_time"])
+        skipped_old_candle = last_processed_candle_time is not None and candle_time <= last_processed_candle_time
+        log_event(f"[DEBUG] newest_closed_candle={candle_time}")
+        log_event(f"[DEBUG] last_processed_candle_before={last_processed_candle_time}")
+        log_event(f"[DEBUG] skipped_old_candle={skipped_old_candle}")
+
+        if skipped_old_candle:
             last_reason = "no_new_candle"
             log_event("No new closed candle.")
+            log_event(f"[DEBUG] last_processed_candle_after={last_processed_candle_time}")
             export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
             time.sleep(POLL_SECONDS)
             continue
@@ -755,39 +798,64 @@ while True:
         signal_detected = long_signal or short_signal
         log_event(f"[DEBUG] signal_detected={signal_detected}")
 
-        if is_in_position(active_trade):
+        if long_signal:
+            last_signal = "LONG"
+            add_signal_marker("LONG", candle["close_price"], candle_time)
+            trend_note = " trend_aligned" if trend_aligned else ""
+            log_event(f"[SIGNAL] LONG close={candle['close_price']:.2f} volume_score={candle['volume_score']:.4f}{trend_note}")
+        elif short_signal:
+            last_signal = "SHORT"
+            add_signal_marker("SHORT", candle["close_price"], candle_time)
+            trend_note = " trend_aligned" if trend_aligned else ""
+            log_event(f"[SIGNAL] SHORT close={candle['close_price']:.2f} volume_score={candle['volume_score']:.4f}{trend_note}")
+        else:
+            last_signal = "NONE"
+
+        execution_skip_reason = None
+        trade = None
+
+        if not signal_detected:
+            if not vol_ok:
+                last_reason = "low_volume"
+            elif not long_breakout and not short_breakdown:
+                last_reason = "no_breakout"
+            else:
+                last_reason = "no_signal"
+        elif is_in_position(active_trade):
+            execution_skip_reason = "skipped_in_position"
             last_reason = "in_position"
             in_position = True
         elif len(trade_times) >= MAX_TRADES_PER_HOUR:
+            execution_skip_reason = "skipped_trade_limit"
             last_reason = "trade_limit"
-        elif not vol_ok:
-            last_reason = "low_volume"
-        elif not long_breakout and not short_breakdown:
-            last_reason = "no_breakout"
         else:
-            last_reason = "breakout + volume"
-
-        if signal_detected and not in_position and len(trade_times) < MAX_TRADES_PER_HOUR:
             side = "LONG" if long_signal else "SHORT"
-            last_signal = side
-            trend_note = " trend_aligned" if trend_aligned else ""
-            log_event(f"[ENTRY] breakout detected (volume ok, trend optional) side={side}{trend_note}")
+            last_reason = "breakout + volume"
             trade = execute_trade(side, candle["close_price"])
             if trade:
                 trade_times.append(int(time.time() * 1000))
                 active_trade = trade
                 log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
-        else:
+            else:
+                execution_skip_reason = "skipped_qty_invalid"
+
+        if execution_skip_reason:
+            log_event(f"[DEBUG] {execution_skip_reason}")
             log_event("[DEBUG] executing_trade=False")
-            last_signal = "NONE"
             log_event(f"No trade: {last_reason}")
 
-        last_processed_candle_time = candle_time
-        log_event(f"[DEBUG] last_processed_candle={last_processed_candle_time}")
+        if last_processed_candle_time is None or candle_time > last_processed_candle_time:
+            last_processed_candle_time = candle_time
+
+        log_event(f"[DEBUG] last_processed_candle_after={last_processed_candle_time}")
         print_heartbeat(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade)
         export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
-    except Exception as e:
-        log_event(f"Error: {e}")
+    except Exception as exc:
+        if executing_trade:
+            log_event("[DEBUG] skipped_execution_error")
+            executing_trade = False
+            log_event("[DEBUG] executing_trade=False")
+        log_event(f"Error: {exc}")
         export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
         time.sleep(POLL_SECONDS)
