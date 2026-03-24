@@ -48,6 +48,7 @@ FUTURES_TAKER_FEE_RATE = float(os.getenv("FUTURES_TAKER_FEE_RATE", "0.0004"))
 MARGIN_TYPE = "ISOLATED"
 WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
 DEBUG_FORCE_ENTRY = True
+DEBUG_DISABLE_PRICE_FILTER = False
 
 RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
@@ -502,6 +503,8 @@ def get_closed_candle_data() -> Optional[Dict[str, Any]]:
         "close_time": close_time,
         "close_price": close_price,
         "close_volume": close_volume,
+        "high_price": float(closed[2]),
+        "low_price": float(closed[3]),
         "volume_score": volume_score,
         "highest_high": max(float(c[2]) for c in breakout_history),
         "lowest_low": min(float(c[3]) for c in breakout_history),
@@ -834,9 +837,21 @@ while True:
         volume_ok = candle["volume_score"] >= MIN_VOLUME_SCORE
         breakout_ok = long_breakout or short_breakdown
         candle_valid = candle["close_time"] is not None
-        price_valid = candle["close_price"] > 0
+        current_price = candle["close_price"]
+        candle_high = candle["high_price"]
+        candle_low = candle["low_price"]
         long_signal = long_breakout and volume_ok
         short_signal = short_breakdown and volume_ok
+        trigger_price = candle["highest_high"] * MICRO_BREAKOUT_FACTOR if long_signal else candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
+        if DEBUG_DISABLE_PRICE_FILTER:
+            price_valid = True
+            print("[DEBUG] price filter disabled")
+        elif long_signal:
+            price_valid = candle_high >= trigger_price * 0.999
+        elif short_signal:
+            price_valid = candle_low <= trigger_price * 1.001
+        else:
+            price_valid = current_price > 0
         trend_aligned = (long_signal and trend == "BULL") or (short_signal and trend == "BEAR")
         signal_detected = long_signal or short_signal
         log_event(f"[DEBUG] signal_detected={signal_detected}")
@@ -867,6 +882,11 @@ while True:
         print(f"volume_ok={volume_ok}")
         print(f"breakout_ok={breakout_ok}")
         print(f"candle_valid={candle_valid}")
+        print(f"[DEBUG] trigger_price={trigger_price:.2f}")
+        print(f"[DEBUG] current_price={current_price:.2f}")
+        print(f"[DEBUG] candle_high={candle_high:.2f}")
+        print(f"[DEBUG] candle_low={candle_low:.2f}")
+        print(f"[DEBUG] price_valid={price_valid}")
         print(f"price_valid={price_valid}")
 
         executing_trade = (
