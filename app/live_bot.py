@@ -47,6 +47,7 @@ FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "5"))
 FUTURES_TAKER_FEE_RATE = float(os.getenv("FUTURES_TAKER_FEE_RATE", "0.0004"))
 MARGIN_TYPE = "ISOLATED"
 WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
+DEBUG_FORCE_ENTRY = True
 
 RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
@@ -830,9 +831,12 @@ while True:
         trend, ema50, ema200 = get_trend_state()
         long_breakout = candle["close_price"] > candle["highest_high"] * MICRO_BREAKOUT_FACTOR
         short_breakdown = candle["close_price"] < candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
-        vol_ok = candle["volume_score"] >= MIN_VOLUME_SCORE
-        long_signal = long_breakout and vol_ok
-        short_signal = short_breakdown and vol_ok
+        volume_ok = candle["volume_score"] >= MIN_VOLUME_SCORE
+        breakout_ok = long_breakout or short_breakdown
+        candle_valid = candle["close_time"] is not None
+        price_valid = candle["close_price"] > 0
+        long_signal = long_breakout and volume_ok
+        short_signal = short_breakdown and volume_ok
         trend_aligned = (long_signal and trend == "BULL") or (short_signal and trend == "BEAR")
         signal_detected = long_signal or short_signal
         log_event(f"[DEBUG] signal_detected={signal_detected}")
@@ -852,32 +856,85 @@ while True:
 
         execution_skip_reason = None
         trade = None
+        trades_this_hour = len(trade_times)
+        in_position = is_in_position(active_trade)
+
+        print("[DEBUG EXECUTION CONDITIONS]")
+        print(f"signal_detected={signal_detected}")
+        print(f"in_position={in_position}")
+        print(f"trades_this_hour={trades_this_hour}")
+        print(f"max_trades={MAX_TRADES_PER_HOUR}")
+        print(f"volume_ok={volume_ok}")
+        print(f"breakout_ok={breakout_ok}")
+        print(f"candle_valid={candle_valid}")
+        print(f"price_valid={price_valid}")
+
+        executing_trade = (
+            signal_detected
+            and not in_position
+            and trades_this_hour < MAX_TRADES_PER_HOUR
+            and volume_ok
+            and breakout_ok
+            and candle_valid
+            and price_valid
+        )
+        print(f"[DEBUG] executing_trade={executing_trade}")
+
+        if not executing_trade:
+            if not signal_detected:
+                print("skip_reason=signal_false")
+            elif in_position:
+                print("skip_reason=already_in_position")
+            elif trades_this_hour >= MAX_TRADES_PER_HOUR:
+                print("skip_reason=trade_limit")
+            elif not volume_ok:
+                print("skip_reason=volume_filter")
+            elif not breakout_ok:
+                print("skip_reason=breakout_filter")
+            elif not candle_valid:
+                print("skip_reason=candle_filter")
+            elif not price_valid:
+                print("skip_reason=price_filter")
+
+        if DEBUG_FORCE_ENTRY and signal_detected and not in_position:
+            print("[DEBUG] FORCING TRADE EXECUTION")
+            executing_trade = True
+            print(f"[DEBUG] executing_trade={executing_trade}")
 
         if not signal_detected:
-            if not vol_ok:
+            if not volume_ok:
                 last_reason = "low_volume"
             elif not long_breakout and not short_breakdown:
                 last_reason = "no_breakout"
             else:
                 last_reason = "no_signal"
-        elif is_in_position(active_trade):
+        elif in_position:
             execution_skip_reason = "skipped_in_position"
             last_reason = "in_position"
             in_position = True
-        elif len(trade_times) >= MAX_TRADES_PER_HOUR:
+        elif trades_this_hour >= MAX_TRADES_PER_HOUR:
             execution_skip_reason = "skipped_trade_limit"
             last_reason = "trade_limit"
+        elif not candle_valid:
+            execution_skip_reason = "skipped_candle_invalid"
+            last_reason = "candle_invalid"
+        elif not price_valid:
+            execution_skip_reason = "skipped_price_invalid"
+            last_reason = "price_invalid"
         else:
             side = "LONG" if long_signal else "SHORT"
             last_reason = "breakout + volume"
             log_event("[DEBUG] signal accepted")
-            trade, execution_error = execute_trade(side, candle["close_price"])
-            if trade:
-                trade_times.append(int(time.time() * 1000))
-                active_trade = trade
-                log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
+            if executing_trade:
+                trade, execution_error = execute_trade(side, candle["close_price"])
+                if trade:
+                    trade_times.append(int(time.time() * 1000))
+                    active_trade = trade
+                    log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
+                else:
+                    execution_skip_reason = execution_error or "skipped_qty_invalid"
             else:
-                execution_skip_reason = execution_error or "skipped_qty_invalid"
+                execution_skip_reason = "skipped_execution_gate"
 
         if execution_skip_reason:
             log_event(f"[DEBUG] {execution_skip_reason}")
