@@ -159,6 +159,10 @@ def round_down_to_step(value: float, step: float) -> float:
     return float((d(value) / d(step)).to_integral_value(rounding=ROUND_DOWN) * d(step))
 
 
+def round_step_size(value: float, step_size: float) -> float:
+    return round_down_to_step(value, step_size)
+
+
 def load_trade_log() -> List[Dict[str, Any]]:
     if not TRADES_LOG_FILE.exists():
         return []
@@ -537,20 +541,64 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
         return None, "skipped_price_invalid"
     stop_price = entry_price * (1 - STOP_PCT) if is_long else entry_price * (1 + STOP_PCT)
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT) if is_long else entry_price * (1 - TAKE_PROFIT_PCT)
-    position_notional_usdt = RISK_PER_TRADE_USDT / (STOP_PCT * FUTURES_LEVERAGE)
-    qty_raw = position_notional_usdt / entry_price
-    qty = round_down_to_step(qty_raw, qty_step)
+    usdt_balance = usdt_before
+    risk_per_trade_usdt = RISK_PER_TRADE_USDT
+    stop_distance_abs = abs(entry_price - stop_price)
+    stop_distance_pct = (stop_distance_abs / entry_price) if entry_price > 0 else 0.0
+    leverage = FUTURES_LEVERAGE
+    step_size = qty_step
+
+    if stop_distance_abs <= 0:
+        return None, "skipped_stop_distance_invalid"
+
+    raw_qty = risk_per_trade_usdt / stop_distance_abs
+    raw_notional = raw_qty * entry_price
+    rounded_qty = round_step_size(raw_qty, step_size)
+
+    print("[DEBUG SIZING]")
+    print(f"balance={usdt_balance}")
+    print(f"risk_per_trade_usdt={risk_per_trade_usdt}")
+    print(f"entry_price={entry_price}")
+    print(f"stop_price={stop_price}")
+    print(f"stop_distance_pct={stop_distance_pct}")
+    print(f"leverage={leverage}")
+    print(f"raw_notional={raw_notional}")
+    print(f"raw_qty={raw_qty}")
+    print(f"step_size={step_size}")
+    print(f"min_qty={min_qty}")
+    print(f"min_notional={min_notional}")
+    print(f"rounded_qty={rounded_qty}")
+
+    if rounded_qty <= 0:
+        if PAPER_MODE and min_qty > 0 and raw_qty > 0:
+            print("[PAPER DEBUG] forcing minQty for paper simulation")
+            rounded_qty = max(min_qty, rounded_qty)
+        else:
+            return None, "skipped_rounding_to_zero"
+
+    if rounded_qty < min_qty:
+        if PAPER_MODE:
+            print("[PAPER DEBUG] forcing minQty for paper simulation")
+            rounded_qty = max(min_qty, rounded_qty)
+        else:
+            rounded_qty = min_qty
+
+    qty = rounded_qty
     if qty <= 0:
         return None, "skipped_qty_invalid"
+
+    effective_risk_usdt = qty * stop_distance_abs
+    print(f"[DEBUG SIZING] effective_risk_usdt={effective_risk_usdt}")
+
     stop_price = round_down_to_step(stop_price, price_tick)
     take_profit_price = round_down_to_step(take_profit_price, price_tick)
-    if qty < min_qty:
-        qty = min_qty
+
     if min_notional and qty * entry_price < min_notional:
-        return None, "skipped_qty_invalid"
+        return None, "skipped_min_notional"
+
     notional = qty * entry_price
     if (notional / FUTURES_LEVERAGE) > usdt_before:
-        return None, "skipped_qty_invalid"
+        return None, "skipped_balance_insufficient"
     estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
     return {
@@ -583,7 +631,7 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
 
     if PAPER_MODE:
         if estimated_entry_fee > paper_usdt_balance:
-            return None, "skipped_qty_invalid", qty
+            return None, "skipped_balance_insufficient", qty
         paper_usdt_balance -= estimated_entry_fee
         log_event(
             f"[PAPER ENTRY] side={side} entry={entry_price:.2f} qty={qty:.6f} stop={stop_price:.2f} tp={take_profit_price:.2f} "
