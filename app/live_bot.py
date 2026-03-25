@@ -94,6 +94,10 @@ fees_paid = 0.0
 net_pnl_total = 0.0
 equity_peak = CAPITAL_USDT
 max_drawdown_pct = 0.0
+win_net_pnl_sum = 0.0
+loss_net_pnl_sum = 0.0
+total_trade_duration_minutes = 0.0
+closed_trade_duration_count = 0
 
 last_signal = "NONE"
 last_reason = "startup"
@@ -181,12 +185,14 @@ def append_trade_log(trade: Dict[str, Any]) -> None:
 
 
 def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float) -> None:
-    global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct
+    global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum
     total_trades += 1
     if net_pnl_value >= 0:
         wins += 1
+        win_net_pnl_sum += net_pnl_value
     else:
         losses += 1
+        loss_net_pnl_sum += net_pnl_value
 
     if gross_pnl >= 0:
         gross_profit_sum += gross_pnl
@@ -200,16 +206,80 @@ def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_
     max_drawdown_pct = max(max_drawdown_pct, dd)
 
 
+def update_trade_duration_metrics(duration_minutes: Optional[float]) -> None:
+    global total_trade_duration_minutes, closed_trade_duration_count
+    if duration_minutes is None:
+        return
+    total_trade_duration_minutes += duration_minutes
+    closed_trade_duration_count += 1
+
+
 def metrics_snapshot() -> Any:
     win_rate = (wins / total_trades) * 100 if total_trades > 0 else None
     profit_factor = (gross_profit_sum / abs(gross_loss_sum)) if losses > 0 and gross_loss_sum != 0 else None
     expectancy = (net_pnl_total / total_trades) if total_trades > 0 else None
-    return win_rate, profit_factor, expectancy
+    avg_win = (win_net_pnl_sum / wins) if wins > 0 else None
+    avg_loss = (loss_net_pnl_sum / losses) if losses > 0 else None
+    avg_trade_duration_minutes = (total_trade_duration_minutes / closed_trade_duration_count) if closed_trade_duration_count > 0 else None
+    return win_rate, profit_factor, expectancy, avg_win, avg_loss, avg_trade_duration_minutes
+
+
+def format_metric_value(value: Optional[float], fmt: str) -> str:
+    if value is None:
+        return "N/A"
+    return format(value, fmt)
+
+
+def print_trade_closed_summary(
+    result: str,
+    side: str,
+    entry: float,
+    exit_price: float,
+    qty: float,
+    gross_pnl: float,
+    fees: float,
+    net_pnl_value: float,
+    balance: float,
+) -> None:
+    win_rate, profit_factor, expectancy, avg_win, avg_loss, _ = metrics_snapshot()
+    print("==================================================")
+    print("[TRADE CLOSED SUMMARY]")
+    print(f"result={result}")
+    print(f"side={side}")
+    print(f"entry={entry:.2f}")
+    print(f"exit={exit_price:.2f}")
+    print(f"qty={qty:.6f}")
+    print(f"gross_pnl={gross_pnl:.4f}")
+    print(f"fees={fees:.4f}")
+    print(f"net_pnl={net_pnl_value:.4f}")
+    print(f"balance={balance:.4f}")
+    print()
+    print(f"total_trades={total_trades}")
+    print(f"wins={wins}")
+    print(f"losses={losses}")
+    print(f"win_rate={format_metric_value(win_rate, '.2f')}%")
+    print(f"gross_profit_sum={gross_profit_sum:.2f}")
+    print(f"gross_loss_sum={gross_loss_sum:.2f}")
+    print(f"net_pnl_total={net_pnl_total:.2f}")
+    print(f"profit_factor={format_metric_value(profit_factor, '.2f')}")
+    print(f"expectancy={format_metric_value(expectancy, '.4f')}")
+    print(f"max_drawdown_pct={max_drawdown_pct * 100:.2f}%")
+    print(f"avg_win={format_metric_value(avg_win, '.4f')}")
+    print(f"avg_loss={format_metric_value(avg_loss, '.4f')}")
+    print("==================================================")
 
 
 def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hour: int, losses_in_row: int, active_trade: Optional[Dict[str, Any]], market_state: str) -> None:
-    win_rate, profit_factor, expectancy = metrics_snapshot()
+    win_rate, profit_factor, expectancy, avg_win, avg_loss, avg_trade_duration_minutes = metrics_snapshot()
     balance = get_usdt_balance()
+    unrealized_pnl = None
+    if active_trade:
+        last_price = get_last_price()
+        entry_price = safe_float(active_trade.get("entry_price"))
+        position_size = safe_float(active_trade.get("position_size", active_trade.get("qty")))
+        side = str(active_trade.get("side"))
+        if entry_price is not None and position_size is not None and side in {"LONG", "SHORT"}:
+            unrealized_pnl = position_size * (last_price - entry_price) if side == "LONG" else position_size * (entry_price - last_price)
     state = {
         "timestamp_utc": utc_now_iso(),
         "mode": "paper" if PAPER_MODE else "real",
@@ -225,17 +295,26 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "entry_price": safe_float(active_trade.get("entry_price")) if active_trade else None,
         "stop_price": safe_float(active_trade.get("stop_price")) if active_trade else None,
         "take_profit_price": safe_float(active_trade.get("take_profit_price", active_trade.get("tp_price"))) if active_trade else None,
+        "position_unrealized_pnl": unrealized_pnl,
         "trades_this_hour": trades_this_hour,
         "consecutive_losses": losses_in_row,
         "market_state": market_state,
         "total_trades": total_trades,
         "wins": wins,
         "losses": losses,
+        "gross_profit_sum": gross_profit_sum,
+        "gross_loss_sum": gross_loss_sum,
         "net_pnl": net_pnl_total,
+        "net_pnl_total": net_pnl_total,
         "fees_paid": fees_paid,
+        "fees_paid_total": fees_paid,
+        "equity_peak": equity_peak,
         "win_rate": win_rate,
         "profit_factor": profit_factor,
         "expectancy": expectancy,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "avg_trade_duration_minutes": avg_trade_duration_minutes,
         "max_drawdown_pct": max_drawdown_pct * 100,
         "last_signal": last_signal,
         "last_reason": last_reason,
@@ -248,7 +327,17 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
     safe_write_json(DASHBOARD_STATE_FILE, state)
 
 
-def log_trade_exit(side: str, entry_price: float, exit_price: float, qty: float, gross_pnl: float, fees: float, net_pnl_value: float, balance_after: float) -> None:
+def log_trade_exit(
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    qty: float,
+    gross_pnl: float,
+    fees: float,
+    net_pnl_value: float,
+    balance_after: float,
+    duration_minutes: Optional[float] = None,
+) -> None:
     global last_trade_snapshot
     result = "WIN" if net_pnl_value >= 0 else "LOSS"
     trade = {
@@ -262,9 +351,55 @@ def log_trade_exit(side: str, entry_price: float, exit_price: float, qty: float,
         "net_pnl": net_pnl_value,
         "result": result,
         "balance_after": balance_after,
+        "duration_minutes": duration_minutes,
     }
     append_trade_log(trade)
     last_trade_snapshot = trade
+
+
+def bootstrap_metrics_from_trades() -> None:
+    global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum, total_trade_duration_minutes, closed_trade_duration_count
+    trades = load_trade_log()
+    if not trades:
+        return
+
+    running_balance = CAPITAL_USDT
+    equity_peak_local = CAPITAL_USDT
+    max_drawdown_local = 0.0
+
+    for trade in trades:
+        net = safe_float(trade.get("net_pnl")) or 0.0
+        gross = safe_float(trade.get("gross_pnl")) or 0.0
+        fees = safe_float(trade.get("fees")) or 0.0
+        duration = safe_float(trade.get("duration_minutes"))
+
+        total_trades += 1
+        net_pnl_total += net
+        fees_paid += fees
+        if net >= 0:
+            wins += 1
+            win_net_pnl_sum += net
+        else:
+            losses += 1
+            loss_net_pnl_sum += net
+
+        if gross >= 0:
+            gross_profit_sum += gross
+        else:
+            gross_loss_sum += gross
+
+        if duration is not None:
+            total_trade_duration_minutes += duration
+            closed_trade_duration_count += 1
+
+        balance_after = safe_float(trade.get("balance_after"))
+        running_balance = balance_after if balance_after is not None else (running_balance + net)
+        equity_peak_local = max(equity_peak_local, running_balance)
+        dd = (equity_peak_local - running_balance) / equity_peak_local if equity_peak_local > 0 else 0.0
+        max_drawdown_local = max(max_drawdown_local, dd)
+
+    equity_peak = equity_peak_local
+    max_drawdown_pct = max_drawdown_local
 
 
 exchange_info = call_with_time_sync("futures_exchange_info", client.futures_exchange_info)
@@ -758,6 +893,12 @@ def add_signal_marker(side: str, price: float, candle_time_ms: int) -> None:
 
 
 ensure_runtime_files()
+bootstrap_metrics_from_trades()
+existing_trades = load_trade_log()
+if existing_trades:
+    last_trade_snapshot = existing_trades[-1]
+if PAPER_MODE and total_trades > 0:
+    paper_usdt_balance = CAPITAL_USDT + net_pnl_total
 log_event("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
 if VALIDATION_MODE:
     log_event("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
@@ -802,6 +943,7 @@ while True:
                     exit_fee = active_trade["position_notional"] * FUTURES_TAKER_FEE_RATE
                     total_fees = active_trade["entry_fee"] + exit_fee
                     net_pnl_value = gross_pnl - total_fees
+                    duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
                     paper_usdt_balance += net_pnl_value
                     consecutive_losses = consecutive_losses + 1 if exit_reason == "LOSS" else 0
                     log_event(
@@ -809,7 +951,20 @@ while True:
                         f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl_value:.4f} balance={paper_usdt_balance:.4f}"
                     )
                     update_metrics(net_pnl_value, gross_pnl, total_fees, paper_usdt_balance)
+                    update_trade_duration_metrics(duration_minutes)
                     log_trade_exit(
+                        active_trade["side"],
+                        active_trade["entry_price"],
+                        exit_price,
+                        active_trade["position_size"],
+                        gross_pnl,
+                        total_fees,
+                        net_pnl_value,
+                        paper_usdt_balance,
+                        duration_minutes,
+                    )
+                    print_trade_closed_summary(
+                        exit_reason,
                         active_trade["side"],
                         active_trade["entry_price"],
                         exit_price,
@@ -836,10 +991,34 @@ while True:
                     fees = 0.0
                     net_pnl_value = gross_pnl
                     result = "LOSS" if net_pnl_value < 0 else "WIN"
+                    exit_price = get_last_price()
+                    duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
                     log_event(f"[FUTURES EXIT {result}] gross_pnl={gross_pnl:.4f} fees={fees:.4f} net_pnl={net_pnl_value:.4f} balance={usdt_now:.4f}")
                     consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
                     update_metrics(net_pnl_value, gross_pnl, fees, usdt_now)
-                    log_trade_exit(active_trade["side"], active_trade["entry_price"], get_last_price(), active_trade["qty"], gross_pnl, fees, net_pnl_value, usdt_now)
+                    update_trade_duration_metrics(duration_minutes)
+                    log_trade_exit(
+                        active_trade["side"],
+                        active_trade["entry_price"],
+                        exit_price,
+                        active_trade["qty"],
+                        gross_pnl,
+                        fees,
+                        net_pnl_value,
+                        usdt_now,
+                        duration_minutes,
+                    )
+                    print_trade_closed_summary(
+                        result,
+                        active_trade["side"],
+                        active_trade["entry_price"],
+                        exit_price,
+                        active_trade["qty"],
+                        gross_pnl,
+                        fees,
+                        net_pnl_value,
+                        usdt_now,
+                    )
                     active_trade = None
                     in_position = False
                 else:
