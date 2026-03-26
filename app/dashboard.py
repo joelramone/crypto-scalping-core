@@ -1,17 +1,23 @@
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
-from flask import Flask, render_template_string
+from flask import Flask, redirect, render_template_string, request, url_for
 
 app = Flask(__name__)
 RUNTIME_DIR = Path("runtime")
 STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_FILE = RUNTIME_DIR / "trades_log.json"
 CANDLES_FILE = RUNTIME_DIR / "candles.json"
+PAPER_CONFIG_FILE = RUNTIME_DIR / "paper_config.json"
+
+UTC_TZ = timezone.utc
+ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 EMPTY_CANDLES_PAYLOAD: Dict[str, Any] = {
@@ -80,6 +86,51 @@ def bot_status(state: Dict[str, Any], updated_at: str) -> str:
     return "IDLE"
 
 
+def parse_tz_param(value: Optional[str]) -> str:
+    return "arg" if str(value or "").lower() == "arg" else "utc"
+
+
+def get_timezone_from_param(value: str) -> timezone:
+    return ARG_TZ if value == "arg" else UTC_TZ
+
+
+def parse_timestamp_utc(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC_TZ)
+        return dt.astimezone(UTC_TZ)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_timestamp(value: Any, selected_tz: str) -> str:
+    dt = parse_timestamp_utc(value)
+    if dt is None:
+        return str(value or "N/A")
+    tz_obj = get_timezone_from_param(selected_tz)
+    return dt.astimezone(tz_obj).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def read_paper_config() -> Dict[str, Any]:
+    data = load_json(PAPER_CONFIG_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def write_paper_config(balance: float) -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "target_balance": balance,
+        "updated_at_utc": datetime.now(tz=UTC_TZ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    PAPER_CONFIG_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _add_marker_traces(fig: go.Figure, markers: List[Dict[str, Any]], styles: Dict[str, Dict[str, Any]], default_name: str) -> None:
     if not markers:
         return
@@ -116,7 +167,7 @@ def _add_marker_traces(fig: go.Figure, markers: List[Dict[str, Any]], styles: Di
         )
 
 
-def build_chart_html(candles_payload: Dict[str, Any]) -> str:
+def build_chart_html(candles_payload: Dict[str, Any], selected_tz: str, window_size: str, active_trade: Optional[Dict[str, Any]]) -> str:
     candles = candles_payload.get("candles", [])
     if not candles:
         return "<div class='empty-state'>Candlestick data is not available yet. Start live_bot.py to begin streaming.</div>"
@@ -127,10 +178,13 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
     if frame.empty:
         return "<div class='empty-state'>Candlestick data is not available yet. Start live_bot.py to begin streaming.</div>"
 
+    display_tz = get_timezone_from_param(selected_tz)
+    frame["time_local"] = frame["time"].dt.tz_convert(display_tz)
+
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
-            x=frame["time"],
+            x=frame["time_local"],
             open=frame["open"],
             high=frame["high"],
             low=frame["low"],
@@ -138,6 +192,17 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
             name="Candles",
             increasing_line_color="#22c55e",
             decreasing_line_color="#ef4444",
+            increasing_line_width=1.5,
+            decreasing_line_width=1.5,
+            customdata=frame[["volume"]],
+            hovertemplate=(
+                "Time: %{x|%Y-%m-%d %H:%M:%S}<br>"
+                "Open: %{open:.4f}<br>"
+                "High: %{high:.4f}<br>"
+                "Low: %{low:.4f}<br>"
+                "Close: %{close:.4f}<br>"
+                "Volume: %{customdata[0]:.4f}<extra></extra>"
+            ),
         )
     )
 
@@ -145,9 +210,10 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
     if not ema_fast.empty:
         ema_fast["time"] = pd.to_datetime(ema_fast["time"], utc=True, errors="coerce")
         ema_fast = ema_fast.dropna(subset=["time"])
+        ema_fast["time_local"] = ema_fast["time"].dt.tz_convert(display_tz)
         fig.add_trace(
             go.Scatter(
-                x=ema_fast["time"],
+                x=ema_fast["time_local"],
                 y=ema_fast["value"],
                 mode="lines",
                 name="EMA Fast",
@@ -159,9 +225,10 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
     if not ema_slow.empty:
         ema_slow["time"] = pd.to_datetime(ema_slow["time"], utc=True, errors="coerce")
         ema_slow = ema_slow.dropna(subset=["time"])
+        ema_slow["time_local"] = ema_slow["time"].dt.tz_convert(display_tz)
         fig.add_trace(
             go.Scatter(
-                x=ema_slow["time"],
+                x=ema_slow["time_local"],
                 y=ema_slow["value"],
                 mode="lines",
                 name="EMA Slow",
@@ -186,6 +253,9 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
     for marker in signal_markers:
         side = str(marker.get("side", "")).upper()
         normalized_signal_markers.append({"time": marker.get("time"), "price": marker.get("price"), "kind": f"SIGNAL_{side}"})
+    for marker in normalized_signal_markers:
+        marker_time = parse_timestamp_utc(marker.get("time"))
+        marker["time"] = marker_time.astimezone(display_tz) if marker_time else None
     _add_marker_traces(fig, normalized_signal_markers, signal_styles, "Signal")
 
     trade_markers = candles_payload.get("trade_markers", [])
@@ -195,6 +265,9 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
         kind = str(marker.get("kind", "")).upper()
         normalized_kind = f"EXECUTED_ENTRY_{side}" if kind == "EXECUTED_ENTRY" else kind
         normalized_trade_markers.append({"time": marker.get("time"), "price": marker.get("price"), "kind": normalized_kind})
+    for marker in normalized_trade_markers:
+        marker_time = parse_timestamp_utc(marker.get("time"))
+        marker["time"] = marker_time.astimezone(display_tz) if marker_time else None
     _add_marker_traces(fig, normalized_trade_markers, trade_styles, "Trade")
 
     levels = candles_payload.get("levels", {}) or {}
@@ -221,6 +294,32 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
             annotation_position="top right",
         )
 
+    if window_size == "all":
+        window_count = len(frame)
+    elif window_size == "50":
+        window_count = 50
+    elif window_size == "200":
+        window_count = 200
+    else:
+        window_count = 100
+
+    latest_index = len(frame) - 1
+    anchor_index = latest_index
+    if active_trade:
+        entry_price = to_float(active_trade.get("entry_price"))
+        if entry_price is not None:
+            idx = (frame["close"].astype(float) - entry_price).abs().idxmin()
+            anchor_index = int(idx)
+
+    if window_size != "all" and len(frame) > window_count:
+        half = max(1, window_count // 2)
+        start_idx = max(0, anchor_index - half)
+        end_idx = min(latest_index, start_idx + window_count - 1)
+        start_idx = max(0, end_idx - window_count + 1)
+        x_start = frame.iloc[start_idx]["time_local"]
+        x_end = frame.iloc[end_idx]["time_local"]
+        fig.update_xaxes(range=[x_start, x_end])
+
     fig.update_layout(
         template="plotly_dark",
         height=640,
@@ -229,12 +328,26 @@ def build_chart_html(candles_payload: Dict[str, Any]) -> str:
         xaxis_rangeslider_visible=False,
         paper_bgcolor="#0f172a",
         plot_bgcolor="#111827",
+        hovermode="x unified",
+        dragmode="zoom",
+    )
+    fig.update_xaxes(showspikes=True, spikemode="across", spikethickness=1)
+
+    return pio.to_html(
+        fig,
+        full_html=False,
+        include_plotlyjs=True,
+        config={
+            "responsive": True,
+            "displaylogo": False,
+            "scrollZoom": True,
+            "doubleClick": "reset+autosize",
+            "modeBarButtonsToRemove": [],
+        },
     )
 
-    return pio.to_html(fig, full_html=False, include_plotlyjs=True, config={"responsive": True, "displaylogo": False})
 
-
-def normalize_trade_row(trade: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_trade_row(trade: Dict[str, Any], selected_tz: str) -> Dict[str, Any]:
     row = dict(trade)
     row["result"] = str(row.get("result") or "N/A").upper()
     row["side"] = str(row.get("side") or "N/A").upper()
@@ -247,8 +360,27 @@ def normalize_trade_row(trade: Dict[str, Any]) -> Dict[str, Any]:
     row["fees_fmt"] = fmt_num(row.get("fees"), 4)
     row["balance_after_fmt"] = fmt_num(row.get("balance_after"), 4)
     row["duration_minutes_fmt"] = fmt_num(row.get("duration_minutes"), 2)
-    row["timestamp_fmt"] = str(row.get("timestamp") or "N/A")
+    row["timestamp_fmt"] = format_timestamp(row.get("timestamp"), selected_tz)
     return row
+
+
+def parse_history_filter(value: Optional[str]) -> str:
+    normalized = str(value or "all").lower()
+    if normalized in {"all", "long", "short", "win", "loss"}:
+        return normalized
+    return "all"
+
+
+def apply_trade_filter(trades: List[Dict[str, Any]], filter_key: str) -> List[Dict[str, Any]]:
+    if filter_key == "long":
+        return [t for t in trades if str(t.get("side")).upper() == "LONG"]
+    if filter_key == "short":
+        return [t for t in trades if str(t.get("side")).upper() == "SHORT"]
+    if filter_key == "win":
+        return [t for t in trades if str(t.get("result")).upper() == "WIN"]
+    if filter_key == "loss":
+        return [t for t in trades if str(t.get("result")).upper() == "LOSS"]
+    return trades
 
 
 def compute_status_pills(state: Dict[str, Any], symbol: str, timeframe: str, updated_at: str) -> List[Tuple[str, str]]:
@@ -288,6 +420,15 @@ TEMPLATE = """
     .negative { color:#ef4444; }
     .neutral { color:#e2e8f0; }
     .chart-wrap { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px; }
+    .controls-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin: 8px 0 10px; }
+    .ctrl-group { display:flex; align-items:center; gap:6px; background:#0b1220; border:1px solid #334155; border-radius:8px; padding:6px 8px; }
+    .ctrl-group label { font-size:12px; color:#94a3b8; }
+    .ctrl-group select, .ctrl-group input { background:#111827; color:#e2e8f0; border:1px solid #334155; border-radius:6px; padding:5px 7px; font-size:12px; }
+    .btn { background:#1e293b; color:#e2e8f0; border:1px solid #334155; border-radius:6px; padding:5px 10px; font-size:12px; text-decoration:none; cursor:pointer; }
+    .btn.active { background:#334155; }
+    .filter-row { display:flex; gap:6px; align-items:center; margin: 10px 0; flex-wrap:wrap; }
+    .warn { color:#f59e0b; font-size:12px; }
+    .ok { color:#22c55e; font-size:12px; }
     .highlight { border-color:#475569; box-shadow: inset 0 0 0 1px rgba(148,163,184,0.2); }
     .panel-title { font-size:14px; margin-bottom:10px; text-transform:uppercase; letter-spacing:0.04em; color:#cbd5e1; }
     .kv-grid { display:grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap:8px; }
@@ -347,6 +488,42 @@ TEMPLATE = """
     <span class="legend-item"><span class="legend-dot" style="background:#22d3ee;"></span>WIN exit</span>
     <span class="legend-item"><span class="legend-dot" style="background:#fb923c;"></span>LOSS exit</span>
   </div>
+  <div class="controls-row">
+    <div class="ctrl-group">
+      <label>Timezone</label>
+      <a class="btn {{ 'active' if selected_tz == 'utc' else '' }}" href="{{ url_for('index', tz='utc', cw=candle_window, tf=trade_filter) }}">UTC</a>
+      <a class="btn {{ 'active' if selected_tz == 'arg' else '' }}" href="{{ url_for('index', tz='arg', cw=candle_window, tf=trade_filter) }}">ARG</a>
+    </div>
+    <div class="ctrl-group">
+      <label>Candles</label>
+      <a class="btn {{ 'active' if candle_window == '50' else '' }}" href="{{ url_for('index', tz=selected_tz, cw='50', tf=trade_filter) }}">50</a>
+      <a class="btn {{ 'active' if candle_window == '100' else '' }}" href="{{ url_for('index', tz=selected_tz, cw='100', tf=trade_filter) }}">100</a>
+      <a class="btn {{ 'active' if candle_window == '200' else '' }}" href="{{ url_for('index', tz=selected_tz, cw='200', tf=trade_filter) }}">200</a>
+      <a class="btn {{ 'active' if candle_window == 'all' else '' }}" href="{{ url_for('index', tz=selected_tz, cw='all', tf=trade_filter) }}">All</a>
+    </div>
+    <form class="ctrl-group" method="post" action="{{ url_for('set_paper_balance') }}">
+      <label>Paper Balance</label>
+      <select name="preset">
+        <option value="100">100</option>
+        <option value="200">200</option>
+        <option value="500">500</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input type="number" name="custom_value" step="0.01" min="1" placeholder="Custom" />
+      <input type="hidden" name="tz" value="{{ selected_tz }}" />
+      <input type="hidden" name="cw" value="{{ candle_window }}" />
+      <input type="hidden" name="tf" value="{{ trade_filter }}" />
+      <button class="btn" type="submit">Apply</button>
+    </form>
+    <div class="ctrl-group"><span class="muted">Auto refresh: 5s</span><a class="btn" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf=trade_filter) }}">Refresh</a></div>
+  </div>
+  {% if paper_warning %}
+    <div class="warn">{{ paper_warning }}</div>
+  {% endif %}
+  {% if paper_info %}
+    <div class="ok">{{ paper_info }}</div>
+  {% endif %}
+  <div class="muted">Paper config: {{ paper_config_display }} | Future expansion candidate: ETHUSDT</div>
   <div class="chart-wrap">{{ chart_html|safe }}</div>
 
   <div class="grid-row dual-row">
@@ -360,6 +537,9 @@ TEMPLATE = """
         <div class="kv"><div class="k">Stop</div><div class="v">{{ current_position.stop }}</div></div>
         <div class="kv"><div class="k">Take Profit</div><div class="v">{{ current_position.tp }}</div></div>
         <div class="kv"><div class="k">Unrealized PnL</div><div class="v {{ current_position.unrealized_class }}">{{ current_position.unrealized }}</div></div>
+        <div class="kv"><div class="k">Risk @ Stop</div><div class="v">{{ current_position.risk_amount }}</div></div>
+        <div class="kv"><div class="k">Reward @ TP</div><div class="v">{{ current_position.reward_amount }}</div></div>
+        <div class="kv"><div class="k">RR Ratio</div><div class="v">{{ current_position.rr_ratio }}</div></div>
       </div>
       {% else %}
       <div class="muted">No open position.</div>
@@ -376,6 +556,8 @@ TEMPLATE = """
         <div class="kv"><div class="k">Exit</div><div class="v">{{ last_trade.exit_price_fmt }}</div></div>
         <div class="kv"><div class="k">Net PnL</div><div class="v {{ last_trade.net_pnl_class }}">{{ last_trade.net_pnl_fmt }}</div></div>
         <div class="kv"><div class="k">Duration (min)</div><div class="v">{{ last_trade.duration_minutes_fmt }}</div></div>
+        <div class="kv"><div class="k">Closed At</div><div class="v">{{ last_trade.timestamp_fmt }}</div></div>
+        <div class="kv"><div class="k">Fees</div><div class="v">{{ last_trade.fees_fmt }}</div></div>
       </div>
       {% else %}
       <div class="muted">No closed trades yet.</div>
@@ -384,6 +566,13 @@ TEMPLATE = """
   </div>
 
   <h2>Trade History (Last 20)</h2>
+  <div class="filter-row">
+    <a class="btn {{ 'active' if trade_filter == 'all' else '' }}" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf='all') }}">All</a>
+    <a class="btn {{ 'active' if trade_filter == 'long' else '' }}" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf='long') }}">LONG</a>
+    <a class="btn {{ 'active' if trade_filter == 'short' else '' }}" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf='short') }}">SHORT</a>
+    <a class="btn {{ 'active' if trade_filter == 'win' else '' }}" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf='win') }}">WIN</a>
+    <a class="btn {{ 'active' if trade_filter == 'loss' else '' }}" href="{{ url_for('index', tz=selected_tz, cw=candle_window, tf='loss') }}">LOSS</a>
+  </div>
   <div class="table-wrap">
     <table>
       <thead>
@@ -436,9 +625,20 @@ TEMPLATE = """
 
 @app.route("/")
 def index() -> str:
+    selected_tz = parse_tz_param(request.args.get("tz"))
+    candle_window = str(request.args.get("cw") or "100").lower()
+    if candle_window not in {"50", "100", "200", "all"}:
+        candle_window = "100"
+    trade_filter = parse_history_filter(request.args.get("tf"))
+    paper_warning = str(request.args.get("paper_warn") or "")
+    paper_info = str(request.args.get("paper_info") or "")
+
     state = load_json(STATE_FILE, {})
     trades = load_json(TRADES_FILE, [])
     candles_payload = load_json(CANDLES_FILE, EMPTY_CANDLES_PAYLOAD)
+    paper_config = read_paper_config()
+    if not paper_warning:
+        paper_warning = str((state if isinstance(state, dict) else {}).get("paper_config_warning") or "")
 
     state = state if isinstance(state, dict) else {}
     trades = trades if isinstance(trades, list) else []
@@ -446,7 +646,7 @@ def index() -> str:
 
     symbol = str(state.get("symbol") or candles_payload.get("symbol") or "BTCUSDT")
     timeframe = str(state.get("timeframe") or candles_payload.get("timeframe") or "1m")
-    updated_at = str(state.get("timestamp_utc") or candles_payload.get("updated_at_utc") or "N/A")
+    updated_at = format_timestamp(state.get("timestamp_utc") or candles_payload.get("updated_at_utc"), selected_tz)
 
     net_pnl_value = fmt_signed_num(state.get("net_pnl_total", state.get("net_pnl")), 4)
     balance_value = fmt_num(state.get("paper_balance"), 4)
@@ -464,26 +664,67 @@ def index() -> str:
     ]
 
     in_position = bool(state.get("in_position", False))
+    entry_price = to_float(state.get("entry_price"))
+    stop_price = to_float(state.get("stop_price"))
+    take_profit = to_float(state.get("take_profit_price"))
+    position_qty = to_float(state.get("position_qty"))
+    pos_side = str(state.get("position_side") or "N/A").upper()
+
+    risk_amount = None
+    reward_amount = None
+    rr_ratio = None
+    if entry_price is not None and stop_price is not None and take_profit is not None and position_qty is not None:
+        if pos_side == "LONG":
+            risk_amount = position_qty * max(0.0, entry_price - stop_price)
+            reward_amount = position_qty * max(0.0, take_profit - entry_price)
+        elif pos_side == "SHORT":
+            risk_amount = position_qty * max(0.0, stop_price - entry_price)
+            reward_amount = position_qty * max(0.0, entry_price - take_profit)
+        if risk_amount and risk_amount > 0:
+            rr_ratio = reward_amount / risk_amount if reward_amount is not None else None
+
     current_position = {
         "side": str(state.get("position_side") or "N/A"),
-        "entry": fmt_num(state.get("entry_price"), 2),
-        "stop": fmt_num(state.get("stop_price"), 2),
-        "tp": fmt_num(state.get("take_profit_price"), 2),
-        "qty": fmt_num(state.get("position_qty"), 6),
+        "entry": fmt_num(entry_price, 2),
+        "stop": fmt_num(stop_price, 2),
+        "tp": fmt_num(take_profit, 2),
+        "qty": fmt_num(position_qty, 6),
         "unrealized": fmt_signed_num(state.get("position_unrealized_pnl"), 4),
         "unrealized_class": pnl_class(state.get("position_unrealized_pnl")),
+        "risk_amount": fmt_num(risk_amount, 4),
+        "reward_amount": fmt_num(reward_amount, 4),
+        "rr_ratio": fmt_num(rr_ratio, 2),
     }
 
-    normalized_trades = [normalize_trade_row(t) for t in trades if isinstance(t, dict)]
-    trades_last_20 = list(reversed(normalized_trades[-20:]))
+    normalized_trades = [normalize_trade_row(t, selected_tz) for t in trades if isinstance(t, dict)]
+    filtered_trades = apply_trade_filter(normalized_trades, trade_filter)
+    trades_last_20 = list(reversed(filtered_trades[-20:]))
     last_trade = trades_last_20[0] if trades_last_20 else None
     last_trade_css = "win" if last_trade and last_trade.get("result") == "WIN" else "loss" if last_trade and last_trade.get("result") == "LOSS" else ""
 
     status_pills = compute_status_pills(state, symbol, timeframe, updated_at)
-    chart_html = build_chart_html(candles_payload)
+    chart_html = build_chart_html(candles_payload, selected_tz, candle_window, state if in_position else None)
 
     recent_events_raw = state.get("recent_events", [])
-    recent_events = list(reversed(recent_events_raw)) if isinstance(recent_events_raw, list) else []
+    recent_events: List[str] = []
+    if isinstance(recent_events_raw, list):
+        for event in reversed(recent_events_raw):
+            text = str(event)
+            if text.startswith("[") and "]" in text:
+                ts_candidate = text[1 : text.index("]")]
+                converted = format_timestamp(ts_candidate, selected_tz)
+                text = f"[{converted}]{text[text.index(']') + 1:]}"
+            recent_events.append(text)
+
+    current_base = to_float(state.get("paper_balance_base"))
+    target_base = to_float(paper_config.get("target_balance"))
+    source = str(state.get("paper_balance_source") or "default")
+    if current_base is not None:
+        paper_config_display = f"base={current_base:.2f} source={source}"
+    elif target_base is not None:
+        paper_config_display = f"target={target_base:.2f}"
+    else:
+        paper_config_display = "default"
 
     return render_template_string(
         TEMPLATE,
@@ -499,7 +740,43 @@ def index() -> str:
         last_trade_css=last_trade_css,
         trades=trades_last_20,
         recent_events=recent_events,
+        selected_tz=selected_tz,
+        candle_window=candle_window,
+        trade_filter=trade_filter,
+        paper_warning=paper_warning,
+        paper_info=paper_info,
+        paper_config_display=paper_config_display,
     )
+
+
+@app.route("/set-paper-balance", methods=["POST"])
+def set_paper_balance() -> Any:
+    tz = parse_tz_param(request.form.get("tz"))
+    cw = str(request.form.get("cw") or "100")
+    tf = parse_history_filter(request.form.get("tf"))
+    state = load_json(STATE_FILE, {})
+    if not isinstance(state, dict):
+        state = {}
+    if str(state.get("mode", "")).lower() != "paper":
+        return redirect(url_for("index", tz=tz, cw=cw, tf=tf, paper_warn="Paper balance control only works in PAPER mode"))
+    if bool(state.get("in_position", False)):
+        return redirect(url_for("index", tz=tz, cw=cw, tf=tf, paper_warn="Cannot change paper balance while a trade is open"))
+
+    preset = str(request.form.get("preset") or "100")
+    custom_value = to_float(request.form.get("custom_value"))
+    if preset == "custom":
+        new_value = custom_value
+    else:
+        new_value = to_float(preset)
+
+    if new_value is None or new_value <= 0:
+        return redirect(url_for("index", tz=tz, cw=cw, tf=tf, paper_warn="Invalid paper balance value"))
+
+    try:
+        write_paper_config(float(new_value))
+    except OSError:
+        return redirect(url_for("index", tz=tz, cw=cw, tf=tf, paper_warn="Could not persist paper balance config"))
+    return redirect(url_for("index", tz=tz, cw=cw, tf=tf, paper_info=f"Paper balance target updated to {new_value:.2f}"))
 
 
 if __name__ == "__main__":
