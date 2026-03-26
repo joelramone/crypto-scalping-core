@@ -54,6 +54,7 @@ RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
 TRADES_LOG_FILE = RUNTIME_DIR / "trades_log.json"
 CANDLES_FILE = RUNTIME_DIR / "candles.json"
+PAPER_CONFIG_FILE = RUNTIME_DIR / "paper_config.json"
 recent_closed_klines_cache: List[List[Any]] = []
 recent_signal_markers: Deque[Dict[str, Any]] = deque(maxlen=400)
 
@@ -280,6 +281,10 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         side = str(active_trade.get("side"))
         if entry_price is not None and position_size is not None and side in {"LONG", "SHORT"}:
             unrealized_pnl = position_size * (last_price - entry_price) if side == "LONG" else position_size * (entry_price - last_price)
+    paper_target_balance = load_paper_config_target()
+    paper_config_warning = None
+    if PAPER_MODE and active_trade and paper_target_balance is not None and abs(paper_target_balance - paper_balance_base) >= 1e-9:
+        paper_config_warning = "Cannot change paper balance while a trade is open"
     state = {
         "timestamp_utc": utc_now_iso(),
         "mode": "paper" if PAPER_MODE else "real",
@@ -289,6 +294,10 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "margin_type": MARGIN_TYPE,
         "leverage": FUTURES_LEVERAGE,
         "paper_balance": balance,
+        "paper_balance_base": paper_balance_base if PAPER_MODE else None,
+        "paper_balance_source": paper_balance_source if PAPER_MODE else None,
+        "paper_target_balance": paper_target_balance if PAPER_MODE else None,
+        "paper_config_warning": paper_config_warning,
         "in_position": is_in_position(active_trade),
         "position_side": active_trade["side"] if active_trade else None,
         "position_qty": float(active_trade.get("position_size", active_trade.get("qty", 0.0))) if active_trade else 0.0,
@@ -423,6 +432,8 @@ if qty_step == 0.0 or price_tick == 0.0:
     sys.exit(1)
 
 paper_usdt_balance = CAPITAL_USDT
+paper_balance_base = CAPITAL_USDT
+paper_balance_source = "env"
 
 
 def ensure_futures_settings() -> None:
@@ -506,6 +517,39 @@ def safe_write_json(path: Path, payload: Any) -> None:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         log_event(f"[WARN] Could not write {path}: {exc}")
+
+
+def load_paper_config_target() -> Optional[float]:
+    if not PAPER_CONFIG_FILE.exists():
+        return None
+    try:
+        payload = json.loads(PAPER_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        log_event(f"[WARN] Could not read {PAPER_CONFIG_FILE}: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = safe_float(payload.get("target_balance"))
+    if value is None or value <= 0:
+        return None
+    return value
+
+
+def apply_paper_balance_config_if_needed(active_trade: Optional[Dict[str, Any]]) -> None:
+    global paper_usdt_balance, paper_balance_base, paper_balance_source
+    if not PAPER_MODE:
+        return
+    target_balance = load_paper_config_target()
+    if target_balance is None:
+        return
+    if active_trade is not None:
+        return
+    if abs(target_balance - paper_balance_base) < 1e-9:
+        return
+    paper_balance_base = target_balance
+    paper_usdt_balance = target_balance
+    paper_balance_source = "runtime_config"
+    log_event(f"[PAPER CONFIG] Rebased paper balance to {paper_usdt_balance:.4f} from runtime/paper_config.json")
 
 
 def build_signal_markers() -> List[Dict[str, Any]]:
@@ -899,6 +943,14 @@ if existing_trades:
     last_trade_snapshot = existing_trades[-1]
 if PAPER_MODE and total_trades > 0:
     paper_usdt_balance = CAPITAL_USDT + net_pnl_total
+    paper_balance_base = paper_usdt_balance
+    paper_balance_source = "trade_log_reconstructed"
+elif PAPER_MODE:
+    paper_balance_base = paper_usdt_balance
+    paper_balance_source = "env"
+
+if PAPER_MODE:
+    apply_paper_balance_config_if_needed(active_trade=None)
 log_event("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
 if VALIDATION_MODE:
     log_event("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
@@ -916,6 +968,7 @@ while True:
         now_ms = int(time.time() * 1000)
         while trade_times and now_ms - trade_times[0] > 3600 * 1000:
             trade_times.popleft()
+        apply_paper_balance_config_if_needed(active_trade)
 
         if active_trade:
             if PAPER_MODE:
