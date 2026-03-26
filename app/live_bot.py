@@ -47,8 +47,10 @@ FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "5"))
 FUTURES_TAKER_FEE_RATE = float(os.getenv("FUTURES_TAKER_FEE_RATE", "0.0004"))
 MARGIN_TYPE = "ISOLATED"
 WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
-DEBUG_FORCE_ENTRY = True
+DEBUG_FORCE_ENTRY = False
 DEBUG_DISABLE_PRICE_FILTER = False
+POSITION_MONITOR_INTERVAL_SECONDS = 60
+POSITION_MONITOR_PROXIMITY_THRESHOLD = 0.15
 
 RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
@@ -99,6 +101,12 @@ win_net_pnl_sum = 0.0
 loss_net_pnl_sum = 0.0
 total_trade_duration_minutes = 0.0
 closed_trade_duration_count = 0
+long_trades = 0
+short_trades = 0
+long_wins = 0
+short_wins = 0
+long_net_pnl = 0.0
+short_net_pnl = 0.0
 
 last_signal = "NONE"
 last_reason = "startup"
@@ -185,8 +193,9 @@ def append_trade_log(trade: Dict[str, Any]) -> None:
     safe_write_json(TRADES_LOG_FILE, rows)
 
 
-def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float) -> None:
+def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float, side: Optional[str] = None) -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum
+    global long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl
     total_trades += 1
     if net_pnl_value >= 0:
         wins += 1
@@ -199,6 +208,17 @@ def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_
         gross_profit_sum += gross_pnl
     else:
         gross_loss_sum += gross_pnl
+
+    if side == "LONG":
+        long_trades += 1
+        long_net_pnl += net_pnl_value
+        if net_pnl_value >= 0:
+            long_wins += 1
+    elif side == "SHORT":
+        short_trades += 1
+        short_net_pnl += net_pnl_value
+        if net_pnl_value >= 0:
+            short_wins += 1
 
     fees_paid += fees
     net_pnl_total += net_pnl_value
@@ -231,6 +251,12 @@ def format_metric_value(value: Optional[float], fmt: str) -> str:
     return format(value, fmt)
 
 
+def directional_metrics_snapshot() -> Tuple[int, int, int, int, float, float, Optional[float], Optional[float]]:
+    long_win_rate = (long_wins / long_trades) * 100 if long_trades > 0 else None
+    short_win_rate = (short_wins / short_trades) * 100 if short_trades > 0 else None
+    return long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl, long_win_rate, short_win_rate
+
+
 def print_trade_closed_summary(
     result: str,
     side: str,
@@ -241,8 +267,10 @@ def print_trade_closed_summary(
     fees: float,
     net_pnl_value: float,
     balance: float,
+    duration_minutes: Optional[float],
 ) -> None:
     win_rate, profit_factor, expectancy, avg_win, avg_loss, _ = metrics_snapshot()
+    d_long_trades, d_short_trades, d_long_wins, d_short_wins, d_long_net_pnl, d_short_net_pnl, d_long_win_rate, d_short_win_rate = directional_metrics_snapshot()
     print("==================================================")
     print("[TRADE CLOSED SUMMARY]")
     print(f"result={result}")
@@ -254,6 +282,7 @@ def print_trade_closed_summary(
     print(f"fees={fees:.4f}")
     print(f"net_pnl={net_pnl_value:.4f}")
     print(f"balance={balance:.4f}")
+    print(f"trade_duration_minutes={format_metric_value(duration_minutes, '.2f')}")
     print()
     print(f"total_trades={total_trades}")
     print(f"wins={wins}")
@@ -267,6 +296,15 @@ def print_trade_closed_summary(
     print(f"max_drawdown_pct={max_drawdown_pct * 100:.2f}%")
     print(f"avg_win={format_metric_value(avg_win, '.4f')}")
     print(f"avg_loss={format_metric_value(avg_loss, '.4f')}")
+    print("directional_summary:")
+    print(f"long_trades={d_long_trades}")
+    print(f"long_wins={d_long_wins}")
+    print(f"long_win_rate={format_metric_value(d_long_win_rate, '.2f')}%")
+    print(f"long_net_pnl={d_long_net_pnl:.4f}")
+    print(f"short_trades={d_short_trades}")
+    print(f"short_wins={d_short_wins}")
+    print(f"short_win_rate={format_metric_value(d_short_win_rate, '.2f')}%")
+    print(f"short_net_pnl={d_short_net_pnl:.4f}")
     print("==================================================")
 
 
@@ -368,6 +406,7 @@ def log_trade_exit(
 
 def bootstrap_metrics_from_trades() -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum, total_trade_duration_minutes, closed_trade_duration_count
+    global long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl
     trades = load_trade_log()
     if not trades:
         return
@@ -396,6 +435,18 @@ def bootstrap_metrics_from_trades() -> None:
             gross_profit_sum += gross
         else:
             gross_loss_sum += gross
+
+        side = str(trade.get("side"))
+        if side == "LONG":
+            long_trades += 1
+            long_net_pnl += net
+            if net >= 0:
+                long_wins += 1
+        elif side == "SHORT":
+            short_trades += 1
+            short_net_pnl += net
+            if net >= 0:
+                short_wins += 1
 
         if duration is not None:
             total_trade_duration_minutes += duration
@@ -883,7 +934,7 @@ position_tp_price: Optional[float] = None
 position_side: Optional[str] = None
 
 
-def execute_trade(side: str, entry_price: float) -> Tuple[Optional[Dict[str, Any]], str]:
+def execute_trade(side: str, entry_price: float, entry_origin: str = "strategy") -> Tuple[Optional[Dict[str, Any]], str]:
     global in_position, executing_trade, position_entry_price, position_stop_price, position_tp_price, position_side
     log_event("[DEBUG] entering execution path")
     log_event(f"[DEBUG] in_position before = {in_position}")
@@ -919,7 +970,7 @@ def execute_trade(side: str, entry_price: float) -> Tuple[Optional[Dict[str, Any
     log_event("[DEBUG] executing_trade=False")
     log_event(f"[DEBUG] in_position after = {in_position}")
     log_event("[DEBUG] execution success = True")
-    log_event(f"[EXECUTION] OPEN {side} at {position_entry_price:.2f}")
+    log_event(f"[EXECUTION] OPEN {side} at {position_entry_price:.2f} origin={entry_origin}")
     return trade, ""
 
 
@@ -934,6 +985,60 @@ def add_signal_marker(side: str, price: float, candle_time_ms: int) -> None:
             "price": price,
         }
     )
+
+
+def get_entry_block_reason(
+    signal_detected: bool,
+    in_position_now: bool,
+    trade_limit_ok: bool,
+    volume_ok: bool,
+    breakout_ok: bool,
+    candle_valid: bool,
+    price_valid: bool,
+) -> str:
+    if not signal_detected:
+        return "signal_false"
+    if in_position_now:
+        return "already_in_position"
+    if not trade_limit_ok:
+        return "trade_limit"
+    if not volume_ok:
+        return "volume_filter"
+    if not breakout_ok:
+        return "breakout_filter"
+    if not candle_valid:
+        return "candle_filter"
+    if not price_valid:
+        return "price_filter"
+    return "execution_gate"
+
+
+def maybe_log_position_monitor(active_trade_state: Dict[str, Any], last_price: float, last_log_time: float) -> float:
+    now_ts = time.time()
+    stop_price = float(active_trade_state["stop_price"])
+    tp_price = float(active_trade_state["take_profit_price"])
+    entry_price = float(active_trade_state["entry_price"])
+    side = str(active_trade_state["side"])
+    full_travel = abs(tp_price - stop_price)
+    if full_travel <= 0:
+        full_travel = max(abs(entry_price) * STOP_PCT, 1e-12)
+    distance_to_stop = abs(last_price - stop_price)
+    distance_to_tp = abs(last_price - tp_price)
+    distance_to_stop_pct = (distance_to_stop / full_travel) * 100
+    distance_to_tp_pct = (distance_to_tp / full_travel) * 100
+    near_stop_or_tp = (distance_to_stop <= (full_travel * POSITION_MONITOR_PROXIMITY_THRESHOLD)) or (
+        distance_to_tp <= (full_travel * POSITION_MONITOR_PROXIMITY_THRESHOLD)
+    )
+    periodic_due = (now_ts - last_log_time) >= POSITION_MONITOR_INTERVAL_SECONDS
+    if periodic_due or near_stop_or_tp:
+        position_size = float(active_trade_state["position_size"])
+        unrealized_pnl = position_size * (last_price - entry_price) if side == "LONG" else position_size * (entry_price - last_price)
+        log_event(
+            f"[POSITION MONITOR] side={side} price={last_price:.2f} entry={entry_price:.2f} stop={stop_price:.2f} tp={tp_price:.2f} "
+            f"unrealized_pnl={unrealized_pnl:.4f} distance_to_tp_pct={distance_to_tp_pct:.2f} distance_to_stop_pct={distance_to_stop_pct:.2f}"
+        )
+        return now_ts
+    return last_log_time
 
 
 ensure_runtime_files()
@@ -952,6 +1057,7 @@ elif PAPER_MODE:
 if PAPER_MODE:
     apply_paper_balance_config_if_needed(active_trade=None)
 log_event("Starting BTCUSDT 1m breakout scalping bot (BINANCE FUTURES USDT-M)...")
+log_event(f"[CONFIG] DEBUG_FORCE_ENTRY={DEBUG_FORCE_ENTRY}")
 if VALIDATION_MODE:
     log_event("VALIDATION_MODE enabled: using shorter lookbacks and relaxed volume threshold.")
 sync_time_offset()
@@ -962,6 +1068,7 @@ trade_times: Deque[int] = deque()
 consecutive_losses = 0
 active_trade: Optional[Dict[str, Any]] = None
 last_market_state = "TRADEABLE"
+last_position_monitor_log_time = 0.0
 
 while True:
     try:
@@ -1003,7 +1110,7 @@ while True:
                         f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} side={active_trade['side']} "
                         f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl_value:.4f} balance={paper_usdt_balance:.4f}"
                     )
-                    update_metrics(net_pnl_value, gross_pnl, total_fees, paper_usdt_balance)
+                    update_metrics(net_pnl_value, gross_pnl, total_fees, paper_usdt_balance, active_trade["side"])
                     update_trade_duration_metrics(duration_minutes)
                     log_trade_exit(
                         active_trade["side"],
@@ -1026,13 +1133,13 @@ while True:
                         total_fees,
                         net_pnl_value,
                         paper_usdt_balance,
+                        duration_minutes,
                     )
                     active_trade = None
                     in_position = False
+                    last_position_monitor_log_time = 0.0
                 else:
-                    log_event(
-                        f"Paper trade still active. price={last_price:.2f} stop={active_trade['stop_price']:.2f} tp={active_trade['take_profit_price']:.2f}"
-                    )
+                    last_position_monitor_log_time = maybe_log_position_monitor(active_trade, last_price, last_position_monitor_log_time)
                     export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
@@ -1048,7 +1155,7 @@ while True:
                     duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
                     log_event(f"[FUTURES EXIT {result}] gross_pnl={gross_pnl:.4f} fees={fees:.4f} net_pnl={net_pnl_value:.4f} balance={usdt_now:.4f}")
                     consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
-                    update_metrics(net_pnl_value, gross_pnl, fees, usdt_now)
+                    update_metrics(net_pnl_value, gross_pnl, fees, usdt_now, active_trade["side"])
                     update_trade_duration_metrics(duration_minutes)
                     log_trade_exit(
                         active_trade["side"],
@@ -1071,9 +1178,11 @@ while True:
                         fees,
                         net_pnl_value,
                         usdt_now,
+                        duration_minutes,
                     )
                     active_trade = None
                     in_position = False
+                    last_position_monitor_log_time = 0.0
                 else:
                     log_event("Futures trade still active. Waiting for stop/tp trigger...")
                     export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
@@ -1154,52 +1263,39 @@ while True:
         trades_this_hour = len(trade_times)
         in_position = is_in_position(active_trade)
 
-        print("[DEBUG EXECUTION CONDITIONS]")
-        print(f"signal_detected={signal_detected}")
-        print(f"in_position={in_position}")
-        print(f"trades_this_hour={trades_this_hour}")
-        print(f"max_trades={MAX_TRADES_PER_HOUR}")
-        print(f"volume_ok={volume_ok}")
-        print(f"breakout_ok={breakout_ok}")
-        print(f"candle_valid={candle_valid}")
-        print(f"[DEBUG] trigger_price={trigger_price:.2f}")
-        print(f"[DEBUG] current_price={current_price:.2f}")
-        print(f"[DEBUG] candle_high={candle_high:.2f}")
-        print(f"[DEBUG] candle_low={candle_low:.2f}")
-        print(f"[DEBUG] price_valid={price_valid}")
-        print(f"price_valid={price_valid}")
-
-        executing_trade = (
+        trade_limit_ok = trades_this_hour < MAX_TRADES_PER_HOUR
+        strategy_execution_allowed = (
             signal_detected
             and not in_position
-            and trades_this_hour < MAX_TRADES_PER_HOUR
+            and trade_limit_ok
             and volume_ok
             and breakout_ok
             and candle_valid
             and price_valid
         )
-        print(f"[DEBUG] executing_trade={executing_trade}")
-
-        if not executing_trade:
-            if not signal_detected:
-                print("skip_reason=signal_false")
-            elif in_position:
-                print("skip_reason=already_in_position")
-            elif trades_this_hour >= MAX_TRADES_PER_HOUR:
-                print("skip_reason=trade_limit")
-            elif not volume_ok:
-                print("skip_reason=volume_filter")
-            elif not breakout_ok:
-                print("skip_reason=breakout_filter")
-            elif not candle_valid:
-                print("skip_reason=candle_filter")
-            elif not price_valid:
-                print("skip_reason=price_filter")
-
-        if DEBUG_FORCE_ENTRY and signal_detected and not in_position:
-            print("[DEBUG] FORCING TRADE EXECUTION")
+        debug_forced_entry = False
+        executing_trade = strategy_execution_allowed
+        if DEBUG_FORCE_ENTRY and signal_detected and not in_position and not strategy_execution_allowed:
+            log_event("[DEBUG] FORCING TRADE EXECUTION")
+            debug_forced_entry = True
             executing_trade = True
-            print(f"[DEBUG] executing_trade={executing_trade}")
+
+        if signal_detected:
+            side = "LONG" if long_signal else "SHORT"
+            log_event("[ENTRY CHECK]")
+            log_event(f"side={side}")
+            log_event(f"signal_detected={signal_detected}")
+            log_event(f"volume_ok={volume_ok}")
+            log_event(f"breakout_ok={breakout_ok}")
+            log_event(f"price_valid={price_valid}")
+            log_event(f"candle_valid={candle_valid}")
+            log_event(f"in_position={in_position}")
+            log_event(f"trade_limit_ok={trade_limit_ok}")
+            log_event(f"debug_force_entry={DEBUG_FORCE_ENTRY}")
+            log_event(f"execution_allowed={executing_trade}")
+            if not executing_trade:
+                entry_block_reason = get_entry_block_reason(signal_detected, in_position, trade_limit_ok, volume_ok, breakout_ok, candle_valid, price_valid)
+                log_event(f"[ENTRY BLOCKED] reason={entry_block_reason}")
 
         if not signal_detected:
             if not volume_ok:
@@ -1224,12 +1320,13 @@ while True:
         else:
             side = "LONG" if long_signal else "SHORT"
             last_reason = "breakout + volume"
-            log_event("[DEBUG] signal accepted")
             if executing_trade:
-                trade, execution_error = execute_trade(side, candle["close_price"])
+                entry_origin = "debug_forced" if debug_forced_entry else "strategy"
+                trade, execution_error = execute_trade(side, candle["close_price"], entry_origin=entry_origin)
                 if trade:
                     trade_times.append(int(time.time() * 1000))
                     active_trade = trade
+                    last_position_monitor_log_time = 0.0
                     log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
                 else:
                     execution_skip_reason = execution_error or "skipped_qty_invalid"
