@@ -105,8 +105,15 @@ long_trades = 0
 short_trades = 0
 long_wins = 0
 short_wins = 0
+long_losses = 0
+short_losses = 0
 long_net_pnl = 0.0
 short_net_pnl = 0.0
+long_win_pnl_sum = 0.0
+long_loss_pnl_sum = 0.0
+short_win_pnl_sum = 0.0
+short_loss_pnl_sum = 0.0
+closed_trade_net_pnls: Deque[float] = deque(maxlen=2000)
 
 last_signal = "NONE"
 last_reason = "startup"
@@ -195,8 +202,10 @@ def append_trade_log(trade: Dict[str, Any]) -> None:
 
 def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float, side: Optional[str] = None) -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum
-    global long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl
+    global long_trades, short_trades, long_wins, short_wins, long_losses, short_losses, long_net_pnl, short_net_pnl
+    global long_win_pnl_sum, long_loss_pnl_sum, short_win_pnl_sum, short_loss_pnl_sum
     total_trades += 1
+    closed_trade_net_pnls.append(net_pnl_value)
     if net_pnl_value >= 0:
         wins += 1
         win_net_pnl_sum += net_pnl_value
@@ -214,11 +223,19 @@ def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_
         long_net_pnl += net_pnl_value
         if net_pnl_value >= 0:
             long_wins += 1
+            long_win_pnl_sum += net_pnl_value
+        else:
+            long_losses += 1
+            long_loss_pnl_sum += net_pnl_value
     elif side == "SHORT":
         short_trades += 1
         short_net_pnl += net_pnl_value
         if net_pnl_value >= 0:
             short_wins += 1
+            short_win_pnl_sum += net_pnl_value
+        else:
+            short_losses += 1
+            short_loss_pnl_sum += net_pnl_value
 
     fees_paid += fees
     net_pnl_total += net_pnl_value
@@ -242,7 +259,37 @@ def metrics_snapshot() -> Any:
     avg_win = (win_net_pnl_sum / wins) if wins > 0 else None
     avg_loss = (loss_net_pnl_sum / losses) if losses > 0 else None
     avg_trade_duration_minutes = (total_trade_duration_minutes / closed_trade_duration_count) if closed_trade_duration_count > 0 else None
-    return win_rate, profit_factor, expectancy, avg_win, avg_loss, avg_trade_duration_minutes
+    avg_win_abs = abs(avg_win) if avg_win is not None else None
+    avg_loss_abs = abs(avg_loss) if avg_loss is not None else None
+    break_even_win_rate_pct = None
+    if avg_win_abs is not None and avg_loss_abs is not None and (avg_loss_abs + avg_win_abs) > 0:
+        break_even_win_rate_pct = (avg_loss_abs / (avg_loss_abs + avg_win_abs)) * 100
+    current_edge_per_trade = expectancy
+    rolling_10 = list(closed_trade_net_pnls)[-10:]
+    rolling_10_win_rate = None
+    rolling_10_expectancy = None
+    rolling_10_profit_factor = None
+    if rolling_10:
+        rolling_10_wins = sum(1 for pnl in rolling_10 if pnl >= 0)
+        rolling_10_win_rate = (rolling_10_wins / len(rolling_10)) * 100
+        rolling_10_expectancy = sum(rolling_10) / len(rolling_10)
+        rolling_profit = sum(pnl for pnl in rolling_10 if pnl >= 0)
+        rolling_loss = sum(pnl for pnl in rolling_10 if pnl < 0)
+        if rolling_loss != 0:
+            rolling_10_profit_factor = rolling_profit / abs(rolling_loss)
+    return (
+        win_rate,
+        profit_factor,
+        expectancy,
+        avg_win,
+        avg_loss,
+        avg_trade_duration_minutes,
+        break_even_win_rate_pct,
+        current_edge_per_trade,
+        rolling_10_win_rate,
+        rolling_10_expectancy,
+        rolling_10_profit_factor,
+    )
 
 
 def format_metric_value(value: Optional[float], fmt: str) -> str:
@@ -251,10 +298,60 @@ def format_metric_value(value: Optional[float], fmt: str) -> str:
     return format(value, fmt)
 
 
-def directional_metrics_snapshot() -> Tuple[int, int, int, int, float, float, Optional[float], Optional[float]]:
+def evaluate_real_money_readiness(
+    total_trades_value: int,
+    expectancy_value: Optional[float],
+    profit_factor_value: Optional[float],
+    max_drawdown_pct_value: float,
+    win_rate_value: Optional[float],
+    break_even_win_rate_pct_value: Optional[float],
+) -> bool:
+    if total_trades_value < 30:
+        return False
+    if expectancy_value is None or expectancy_value <= 0:
+        return False
+    if profit_factor_value is None or profit_factor_value < 1.20:
+        return False
+    if max_drawdown_pct_value > 10:
+        return False
+    if win_rate_value is None or break_even_win_rate_pct_value is None:
+        return False
+    return win_rate_value >= break_even_win_rate_pct_value
+
+
+def get_scale_plan(real_money_ready: bool, total_trades_value: int, max_drawdown_pct_value: float) -> Tuple[str, str]:
+    if not real_money_ready:
+        return "PAPER", "real_money_ready=False"
+    if total_trades_value > 60 and max_drawdown_pct_value <= 7:
+        return "LIVE", "real_money_ready=True,total_trades>60,max_drawdown_pct<=7"
+    if 30 <= total_trades_value <= 60:
+        return "MICRO_LIVE", "real_money_ready=True,total_trades_between_30_and_60"
+    return "MICRO_LIVE", "real_money_ready=True"
+
+
+def directional_metrics_snapshot() -> Tuple[int, int, int, int, int, int, float, float, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
     long_win_rate = (long_wins / long_trades) * 100 if long_trades > 0 else None
     short_win_rate = (short_wins / short_trades) * 100 if short_trades > 0 else None
-    return long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl, long_win_rate, short_win_rate
+    avg_long_win = (long_win_pnl_sum / long_wins) if long_wins > 0 else None
+    avg_long_loss = (long_loss_pnl_sum / long_losses) if long_losses > 0 else None
+    avg_short_win = (short_win_pnl_sum / short_wins) if short_wins > 0 else None
+    avg_short_loss = (short_loss_pnl_sum / short_losses) if short_losses > 0 else None
+    return (
+        long_trades,
+        short_trades,
+        long_wins,
+        short_wins,
+        long_losses,
+        short_losses,
+        long_net_pnl,
+        short_net_pnl,
+        long_win_rate,
+        short_win_rate,
+        avg_long_win,
+        avg_long_loss,
+        avg_short_win,
+        avg_short_loss,
+    )
 
 
 def print_trade_closed_summary(
@@ -269,8 +366,44 @@ def print_trade_closed_summary(
     balance: float,
     duration_minutes: Optional[float],
 ) -> None:
-    win_rate, profit_factor, expectancy, avg_win, avg_loss, _ = metrics_snapshot()
-    d_long_trades, d_short_trades, d_long_wins, d_short_wins, d_long_net_pnl, d_short_net_pnl, d_long_win_rate, d_short_win_rate = directional_metrics_snapshot()
+    (
+        win_rate,
+        profit_factor,
+        expectancy,
+        avg_win,
+        avg_loss,
+        avg_trade_duration_minutes,
+        break_even_win_rate_pct,
+        current_edge_per_trade,
+        rolling_10_win_rate,
+        rolling_10_expectancy,
+        rolling_10_profit_factor,
+    ) = metrics_snapshot()
+    (
+        d_long_trades,
+        d_short_trades,
+        d_long_wins,
+        d_short_wins,
+        d_long_losses,
+        d_short_losses,
+        d_long_net_pnl,
+        d_short_net_pnl,
+        d_long_win_rate,
+        d_short_win_rate,
+        _avg_long_win,
+        _avg_long_loss,
+        _avg_short_win,
+        _avg_short_loss,
+    ) = directional_metrics_snapshot()
+    real_money_ready = evaluate_real_money_readiness(
+        total_trades,
+        expectancy,
+        profit_factor,
+        max_drawdown_pct * 100,
+        win_rate,
+        break_even_win_rate_pct,
+    )
+    recommended_mode, recommended_reason = get_scale_plan(real_money_ready, total_trades, max_drawdown_pct * 100)
     print("==================================================")
     print("[TRADE CLOSED SUMMARY]")
     print(f"result={result}")
@@ -296,20 +429,80 @@ def print_trade_closed_summary(
     print(f"max_drawdown_pct={max_drawdown_pct * 100:.2f}%")
     print(f"avg_win={format_metric_value(avg_win, '.4f')}")
     print(f"avg_loss={format_metric_value(avg_loss, '.4f')}")
+    print(f"avg_trade_duration_minutes={format_metric_value(avg_trade_duration_minutes, '.2f')}")
+    print(f"rolling_10_win_rate={format_metric_value(rolling_10_win_rate, '.2f')}%")
+    print(f"rolling_10_expectancy={format_metric_value(rolling_10_expectancy, '.4f')}")
+    print(f"rolling_10_profit_factor={format_metric_value(rolling_10_profit_factor, '.2f')}")
+    print()
     print("directional_summary:")
     print(f"long_trades={d_long_trades}")
     print(f"long_wins={d_long_wins}")
+    print(f"long_losses={d_long_losses}")
     print(f"long_win_rate={format_metric_value(d_long_win_rate, '.2f')}%")
     print(f"long_net_pnl={d_long_net_pnl:.4f}")
     print(f"short_trades={d_short_trades}")
     print(f"short_wins={d_short_wins}")
+    print(f"short_losses={d_short_losses}")
     print(f"short_win_rate={format_metric_value(d_short_win_rate, '.2f')}%")
     print(f"short_net_pnl={d_short_net_pnl:.4f}")
+    print()
+    print("validation_summary:")
+    print(f"break_even_win_rate_pct={format_metric_value(break_even_win_rate_pct, '.2f')}%")
+    print(f"current_edge_per_trade={format_metric_value(current_edge_per_trade, '.4f')}")
+    print(f"real_money_ready={real_money_ready}")
     print("==================================================")
+    print("[READINESS CHECK]")
+    print(f"total_trades={total_trades}")
+    print(f"expectancy={format_metric_value(expectancy, '.4f')}")
+    print(f"profit_factor={format_metric_value(profit_factor, '.2f')}")
+    print(f"max_drawdown_pct={max_drawdown_pct * 100:.2f}")
+    print(f"win_rate={format_metric_value(win_rate, '.2f')}")
+    print(f"break_even_win_rate_pct={format_metric_value(break_even_win_rate_pct, '.2f')}")
+    print(f"real_money_ready={real_money_ready}")
+    print("[SCALE PLAN]")
+    print(f"recommended_mode={recommended_mode}")
+    print(f"reason={recommended_reason}")
 
 
 def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hour: int, losses_in_row: int, active_trade: Optional[Dict[str, Any]], market_state: str) -> None:
-    win_rate, profit_factor, expectancy, avg_win, avg_loss, avg_trade_duration_minutes = metrics_snapshot()
+    (
+        win_rate,
+        profit_factor,
+        expectancy,
+        avg_win,
+        avg_loss,
+        avg_trade_duration_minutes,
+        break_even_win_rate_pct,
+        current_edge_per_trade,
+        rolling_10_win_rate,
+        rolling_10_expectancy,
+        rolling_10_profit_factor,
+    ) = metrics_snapshot()
+    (
+        d_long_trades,
+        d_short_trades,
+        d_long_wins,
+        d_short_wins,
+        d_long_losses,
+        d_short_losses,
+        d_long_net_pnl,
+        d_short_net_pnl,
+        d_long_win_rate,
+        d_short_win_rate,
+        avg_long_win,
+        avg_long_loss,
+        avg_short_win,
+        avg_short_loss,
+    ) = directional_metrics_snapshot()
+    real_money_ready = evaluate_real_money_readiness(
+        total_trades,
+        expectancy,
+        profit_factor,
+        max_drawdown_pct * 100,
+        win_rate,
+        break_even_win_rate_pct,
+    )
+    recommended_mode, recommended_reason = get_scale_plan(real_money_ready, total_trades, max_drawdown_pct * 100)
     balance = get_usdt_balance()
     unrealized_pnl = None
     if active_trade:
@@ -362,6 +555,28 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "avg_win": avg_win,
         "avg_loss": avg_loss,
         "avg_trade_duration_minutes": avg_trade_duration_minutes,
+        "break_even_win_rate_pct": break_even_win_rate_pct,
+        "current_edge_per_trade": current_edge_per_trade,
+        "rolling_10_win_rate": rolling_10_win_rate,
+        "rolling_10_expectancy": rolling_10_expectancy,
+        "rolling_10_profit_factor": rolling_10_profit_factor,
+        "long_trades": d_long_trades,
+        "short_trades": d_short_trades,
+        "long_wins": d_long_wins,
+        "short_wins": d_short_wins,
+        "long_losses": d_long_losses,
+        "short_losses": d_short_losses,
+        "long_net_pnl": d_long_net_pnl,
+        "short_net_pnl": d_short_net_pnl,
+        "long_win_rate": d_long_win_rate,
+        "short_win_rate": d_short_win_rate,
+        "avg_long_win": avg_long_win,
+        "avg_long_loss": avg_long_loss,
+        "avg_short_win": avg_short_win,
+        "avg_short_loss": avg_short_loss,
+        "real_money_ready": real_money_ready,
+        "recommended_mode": recommended_mode,
+        "recommended_mode_reason": recommended_reason,
         "max_drawdown_pct": max_drawdown_pct * 100,
         "last_signal": last_signal,
         "last_reason": last_reason,
@@ -406,7 +621,8 @@ def log_trade_exit(
 
 def bootstrap_metrics_from_trades() -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum, total_trade_duration_minutes, closed_trade_duration_count
-    global long_trades, short_trades, long_wins, short_wins, long_net_pnl, short_net_pnl
+    global long_trades, short_trades, long_wins, short_wins, long_losses, short_losses, long_net_pnl, short_net_pnl
+    global long_win_pnl_sum, long_loss_pnl_sum, short_win_pnl_sum, short_loss_pnl_sum
     trades = load_trade_log()
     if not trades:
         return
@@ -417,6 +633,7 @@ def bootstrap_metrics_from_trades() -> None:
 
     for trade in trades:
         net = safe_float(trade.get("net_pnl")) or 0.0
+        closed_trade_net_pnls.append(net)
         gross = safe_float(trade.get("gross_pnl")) or 0.0
         fees = safe_float(trade.get("fees")) or 0.0
         duration = safe_float(trade.get("duration_minutes"))
@@ -442,11 +659,19 @@ def bootstrap_metrics_from_trades() -> None:
             long_net_pnl += net
             if net >= 0:
                 long_wins += 1
+                long_win_pnl_sum += net
+            else:
+                long_losses += 1
+                long_loss_pnl_sum += net
         elif side == "SHORT":
             short_trades += 1
             short_net_pnl += net
             if net >= 0:
                 short_wins += 1
+                short_win_pnl_sum += net
+            else:
+                short_losses += 1
+                short_loss_pnl_sum += net
 
         if duration is not None:
             total_trade_duration_minutes += duration
@@ -1016,7 +1241,7 @@ def get_entry_block_reason(
 def maybe_log_position_monitor(active_trade_state: Dict[str, Any], last_price: float, last_log_time: float) -> float:
     now_ts = time.time()
     stop_price = float(active_trade_state["stop_price"])
-    tp_price = float(active_trade_state["take_profit_price"])
+    tp_price = float(active_trade_state.get("take_profit_price", active_trade_state.get("tp_price")))
     entry_price = float(active_trade_state["entry_price"])
     side = str(active_trade_state["side"])
     full_travel = abs(tp_price - stop_price)
@@ -1026,17 +1251,20 @@ def maybe_log_position_monitor(active_trade_state: Dict[str, Any], last_price: f
     distance_to_tp = abs(last_price - tp_price)
     distance_to_stop_pct = (distance_to_stop / full_travel) * 100
     distance_to_tp_pct = (distance_to_tp / full_travel) * 100
-    near_stop_or_tp = (distance_to_stop <= (full_travel * POSITION_MONITOR_PROXIMITY_THRESHOLD)) or (
-        distance_to_tp <= (full_travel * POSITION_MONITOR_PROXIMITY_THRESHOLD)
-    )
+    near_stop_or_tp = distance_to_tp_pct <= 15 or distance_to_stop_pct <= 15
     periodic_due = (now_ts - last_log_time) >= POSITION_MONITOR_INTERVAL_SECONDS
     if periodic_due or near_stop_or_tp:
-        position_size = float(active_trade_state["position_size"])
+        position_size = float(active_trade_state.get("position_size", active_trade_state.get("qty", 0.0)))
         unrealized_pnl = position_size * (last_price - entry_price) if side == "LONG" else position_size * (entry_price - last_price)
-        log_event(
-            f"[POSITION MONITOR] side={side} price={last_price:.2f} entry={entry_price:.2f} stop={stop_price:.2f} tp={tp_price:.2f} "
-            f"unrealized_pnl={unrealized_pnl:.4f} distance_to_tp_pct={distance_to_tp_pct:.2f} distance_to_stop_pct={distance_to_stop_pct:.2f}"
-        )
+        log_event("[POSITION MONITOR]")
+        log_event(f"side={side}")
+        log_event(f"price={last_price:.2f}")
+        log_event(f"entry={entry_price:.2f}")
+        log_event(f"stop={stop_price:.2f}")
+        log_event(f"tp={tp_price:.2f}")
+        log_event(f"unrealized_pnl={unrealized_pnl:.4f}")
+        log_event(f"distance_to_tp_pct={distance_to_tp_pct:.2f}")
+        log_event(f"distance_to_stop_pct={distance_to_stop_pct:.2f}")
         return now_ts
     return last_log_time
 
@@ -1184,7 +1412,8 @@ while True:
                     in_position = False
                     last_position_monitor_log_time = 0.0
                 else:
-                    log_event("Futures trade still active. Waiting for stop/tp trigger...")
+                    last_price = get_last_price()
+                    last_position_monitor_log_time = maybe_log_position_monitor(active_trade, last_price, last_position_monitor_log_time)
                     export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
                     continue
@@ -1274,10 +1503,12 @@ while True:
             and price_valid
         )
         debug_forced_entry = False
+        execution_allowed = strategy_execution_allowed
         executing_trade = strategy_execution_allowed
         if DEBUG_FORCE_ENTRY and signal_detected and not in_position and not strategy_execution_allowed:
             log_event("[DEBUG] FORCING TRADE EXECUTION")
             debug_forced_entry = True
+            execution_allowed = True
             executing_trade = True
 
         if signal_detected:
@@ -1292,8 +1523,8 @@ while True:
             log_event(f"in_position={in_position}")
             log_event(f"trade_limit_ok={trade_limit_ok}")
             log_event(f"debug_force_entry={DEBUG_FORCE_ENTRY}")
-            log_event(f"execution_allowed={executing_trade}")
-            if not executing_trade:
+            log_event(f"execution_allowed={execution_allowed}")
+            if not execution_allowed:
                 entry_block_reason = get_entry_block_reason(signal_detected, in_position, trade_limit_ok, volume_ok, breakout_ok, candle_valid, price_valid)
                 log_event(f"[ENTRY BLOCKED] reason={entry_block_reason}")
 
@@ -1330,6 +1561,8 @@ while True:
                     log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
                 else:
                     execution_skip_reason = execution_error or "skipped_qty_invalid"
+                    blocked_reason = "qty_invalid" if execution_skip_reason in {"skipped_qty_invalid", "skipped_rounding_to_zero", "skipped_min_notional"} else "execution_error"
+                    log_event(f"[ENTRY BLOCKED] reason={blocked_reason}")
             else:
                 execution_skip_reason = "skipped_execution_gate"
 
