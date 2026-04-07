@@ -51,6 +51,16 @@ DEBUG_FORCE_ENTRY = False
 DEBUG_DISABLE_PRICE_FILTER = False
 POSITION_MONITOR_INTERVAL_SECONDS = 60
 POSITION_MONITOR_PROXIMITY_THRESHOLD = 0.15
+ENABLE_PARTIAL_TP = True
+PARTIAL_TP_TRIGGER_PCT = 0.005
+PARTIAL_TP_CLOSE_FRACTION = 0.5
+ENABLE_BREAK_EVEN_STOP = True
+BREAK_EVEN_TRIGGER_PCT = 0.003
+BREAK_EVEN_OFFSET_PCT = 0.0002
+ENABLE_TIME_EXIT = True
+MAX_TRADE_DURATION_MINUTES = 10
+ENABLE_TRAILING_STOP_AFTER_PARTIAL = True
+TRAILING_STOP_BUFFER_PCT = 0.003
 
 RUNTIME_DIR = Path("runtime")
 DASHBOARD_STATE_FILE = RUNTIME_DIR / "dashboard_state.json"
@@ -365,6 +375,10 @@ def print_trade_closed_summary(
     net_pnl_value: float,
     balance: float,
     duration_minutes: Optional[float],
+    exit_reason: str,
+    partial_tp_done: bool,
+    max_favorable_excursion_usdt: float,
+    max_adverse_excursion_usdt: float,
 ) -> None:
     (
         win_rate,
@@ -416,6 +430,10 @@ def print_trade_closed_summary(
     print(f"net_pnl={net_pnl_value:.4f}")
     print(f"balance={balance:.4f}")
     print(f"trade_duration_minutes={format_metric_value(duration_minutes, '.2f')}")
+    print(f"exit_reason={exit_reason}")
+    print(f"partial_tp_done={partial_tp_done}")
+    print(f"max_favorable_excursion_usdt={max_favorable_excursion_usdt:.4f}")
+    print(f"max_adverse_excursion_usdt={max_adverse_excursion_usdt:.4f}")
     print()
     print(f"total_trades={total_trades}")
     print(f"wins={wins}")
@@ -535,6 +553,17 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "entry_price": safe_float(active_trade.get("entry_price")) if active_trade else None,
         "stop_price": safe_float(active_trade.get("stop_price")) if active_trade else None,
         "take_profit_price": safe_float(active_trade.get("take_profit_price", active_trade.get("tp_price"))) if active_trade else None,
+        "partial_tp_done": bool(active_trade.get("partial_tp_done")) if active_trade else False,
+        "break_even_armed": bool(active_trade.get("break_even_armed")) if active_trade else False,
+        "exit_reason": active_trade.get("exit_reason") if active_trade else None,
+        "current_trade_duration_minutes": max(
+            0.0,
+            (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0,
+        )
+        if active_trade
+        else None,
+        "max_favorable_excursion_usdt": safe_float(active_trade.get("max_favorable_excursion_usdt")) if active_trade else None,
+        "max_adverse_excursion_usdt": safe_float(active_trade.get("max_adverse_excursion_usdt")) if active_trade else None,
         "position_unrealized_pnl": unrealized_pnl,
         "trades_this_hour": trades_this_hour,
         "consecutive_losses": losses_in_row,
@@ -599,6 +628,10 @@ def log_trade_exit(
     net_pnl_value: float,
     balance_after: float,
     duration_minutes: Optional[float] = None,
+    exit_reason: Optional[str] = None,
+    partial_tp_done: bool = False,
+    max_favorable_excursion_usdt: Optional[float] = None,
+    max_adverse_excursion_usdt: Optional[float] = None,
 ) -> None:
     global last_trade_snapshot
     result = "WIN" if net_pnl_value >= 0 else "LOSS"
@@ -614,6 +647,10 @@ def log_trade_exit(
         "result": result,
         "balance_after": balance_after,
         "duration_minutes": duration_minutes,
+        "exit_reason": exit_reason,
+        "partial_tp_done": partial_tp_done,
+        "max_favorable_excursion_usdt": max_favorable_excursion_usdt,
+        "max_adverse_excursion_usdt": max_adverse_excursion_usdt,
     }
     append_trade_log(trade)
     last_trade_snapshot = trade
@@ -1096,6 +1133,7 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
             "entry_time_ms": int(time.time() * 1000),
             "position_size": qty,
             "position_qty": qty,
+            "original_qty": qty,
             "position_notional": notional,
             "side": side,
             "entry_price": entry_price,
@@ -1104,6 +1142,16 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
             "take_profit_price": take_profit_price,
             "usdt_before": usdt_before,
             "estimated_exit_fee": estimated_exit_fee,
+            "partial_tp_done": False,
+            "break_even_armed": False,
+            "highest_price_seen": entry_price if side == "LONG" else None,
+            "lowest_price_seen": entry_price if side == "SHORT" else None,
+            "realized_gross_pnl": 0.0,
+            "realized_fees": estimated_entry_fee,
+            "realized_net_pnl": -estimated_entry_fee,
+            "max_favorable_excursion_usdt": 0.0,
+            "max_adverse_excursion_usdt": 0.0,
+            "exit_reason": None,
         }, "", qty
 
     entry_order = call_with_time_sync(
@@ -1143,11 +1191,21 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
         "entry_order": entry_order,
         "entry_time_ms": int(time.time() * 1000),
         "qty": qty,
+        "position_size": qty,
+        "original_qty": qty,
         "side": side,
         "entry_price": entry_price,
         "stop_price": stop_price,
         "tp_price": take_profit_price,
+        "take_profit_price": take_profit_price,
         "usdt_before": usdt_before,
+        "partial_tp_done": False,
+        "break_even_armed": False,
+        "highest_price_seen": entry_price if side == "LONG" else None,
+        "lowest_price_seen": entry_price if side == "SHORT" else None,
+        "max_favorable_excursion_usdt": 0.0,
+        "max_adverse_excursion_usdt": 0.0,
+        "exit_reason": None,
     }, "", qty
 
 
@@ -1269,6 +1327,46 @@ def maybe_log_position_monitor(active_trade_state: Dict[str, Any], last_price: f
     return last_log_time
 
 
+def get_trade_qty(active_trade_state: Dict[str, Any]) -> float:
+    return float(active_trade_state.get("position_size", active_trade_state.get("qty", 0.0)))
+
+
+def compute_gross_pnl(side: str, entry_price: float, exit_price: float, qty: float) -> float:
+    return qty * (exit_price - entry_price) if side == "LONG" else qty * (entry_price - exit_price)
+
+
+def compute_exit_fee(notional_price: float, qty: float) -> float:
+    return abs(notional_price * qty) * FUTURES_TAKER_FEE_RATE
+
+
+def update_excursions(active_trade_state: Dict[str, Any], last_price: float) -> None:
+    side = str(active_trade_state["side"])
+    entry_price = float(active_trade_state["entry_price"])
+    qty = get_trade_qty(active_trade_state)
+    unrealized = compute_gross_pnl(side, entry_price, last_price, qty)
+    active_trade_state["max_favorable_excursion_usdt"] = max(float(active_trade_state.get("max_favorable_excursion_usdt", 0.0)), unrealized)
+    active_trade_state["max_adverse_excursion_usdt"] = min(float(active_trade_state.get("max_adverse_excursion_usdt", 0.0)), unrealized)
+    if side == "LONG":
+        prev_high = safe_float(active_trade_state.get("highest_price_seen"))
+        active_trade_state["highest_price_seen"] = max(prev_high if prev_high is not None else last_price, last_price)
+    elif side == "SHORT":
+        prev_low = safe_float(active_trade_state.get("lowest_price_seen"))
+        active_trade_state["lowest_price_seen"] = min(prev_low if prev_low is not None else last_price, last_price)
+
+
+def get_stop_exit_reason(active_trade_state: Dict[str, Any]) -> str:
+    stop_price = float(active_trade_state["stop_price"])
+    entry_price = float(active_trade_state["entry_price"])
+    side = str(active_trade_state["side"])
+    partial_tp_done = bool(active_trade_state.get("partial_tp_done"))
+    break_even_price = entry_price * (1 + BREAK_EVEN_OFFSET_PCT) if side == "LONG" else entry_price * (1 - BREAK_EVEN_OFFSET_PCT)
+    if partial_tp_done:
+        return "TRAILING_STOP"
+    if bool(active_trade_state.get("break_even_armed")) and ((side == "LONG" and stop_price >= break_even_price) or (side == "SHORT" and stop_price <= break_even_price)):
+        return "BREAKEVEN_STOP"
+    return "SL"
+
+
 ensure_runtime_files()
 bootstrap_metrics_from_trades()
 existing_trades = load_trade_log()
@@ -1308,60 +1406,161 @@ while True:
         if active_trade:
             if PAPER_MODE:
                 last_price = get_last_price()
+                update_excursions(active_trade, last_price)
+                side = str(active_trade["side"])
+                entry_price = float(active_trade["entry_price"])
+                current_qty = get_trade_qty(active_trade)
+                duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
+
+                if ENABLE_PARTIAL_TP and not bool(active_trade.get("partial_tp_done")) and current_qty > 0:
+                    partial_trigger_hit = (side == "LONG" and last_price >= entry_price * (1 + PARTIAL_TP_TRIGGER_PCT)) or (
+                        side == "SHORT" and last_price <= entry_price * (1 - PARTIAL_TP_TRIGGER_PCT)
+                    )
+                    if partial_trigger_hit:
+                        close_qty = max(round_step_size(current_qty * PARTIAL_TP_CLOSE_FRACTION, qty_step), 0.0)
+                        if close_qty <= 0:
+                            close_qty = current_qty * PARTIAL_TP_CLOSE_FRACTION
+                        close_qty = min(close_qty, current_qty)
+                        if close_qty > 0:
+                            partial_gross = compute_gross_pnl(side, entry_price, last_price, close_qty)
+                            partial_exit_fee = compute_exit_fee(last_price, close_qty)
+                            partial_net = partial_gross - partial_exit_fee
+                            paper_usdt_balance += partial_net
+                            remaining_qty = current_qty - close_qty
+                            active_trade["position_size"] = remaining_qty
+                            active_trade["position_qty"] = remaining_qty
+                            active_trade["partial_tp_done"] = True
+                            active_trade["realized_gross_pnl"] = float(active_trade.get("realized_gross_pnl", 0.0)) + partial_gross
+                            active_trade["realized_fees"] = float(active_trade.get("realized_fees", active_trade.get("entry_fee", 0.0))) + partial_exit_fee
+                            active_trade["realized_net_pnl"] = float(active_trade.get("realized_net_pnl", -float(active_trade.get("entry_fee", 0.0)))) + partial_net
+                            log_event("[PARTIAL TP]")
+                            log_event(f"side={side}")
+                            log_event(f"entry={entry_price:.2f}")
+                            log_event(f"price={last_price:.2f}")
+                            log_event(f"closed_qty={close_qty:.6f}")
+                            log_event(f"remaining_qty={remaining_qty:.6f}")
+                            log_event(f"realized_net_pnl={partial_net:.4f}")
+
+                if ENABLE_BREAK_EVEN_STOP and not bool(active_trade.get("break_even_armed")):
+                    break_even_trigger_hit = (side == "LONG" and last_price >= entry_price * (1 + BREAK_EVEN_TRIGGER_PCT)) or (
+                        side == "SHORT" and last_price <= entry_price * (1 - BREAK_EVEN_TRIGGER_PCT)
+                    )
+                    if break_even_trigger_hit:
+                        old_stop = float(active_trade["stop_price"])
+                        new_stop = entry_price * (1 + BREAK_EVEN_OFFSET_PCT) if side == "LONG" else entry_price * (1 - BREAK_EVEN_OFFSET_PCT)
+                        if (side == "LONG" and new_stop > old_stop) or (side == "SHORT" and new_stop < old_stop):
+                            active_trade["stop_price"] = new_stop
+                            active_trade["break_even_armed"] = True
+                            log_event("[STOP MOVED TO BREAKEVEN]")
+                            log_event(f"side={side}")
+                            log_event(f"old_stop={old_stop:.2f}")
+                            log_event(f"new_stop={new_stop:.2f}")
+
+                if ENABLE_TRAILING_STOP_AFTER_PARTIAL and bool(active_trade.get("partial_tp_done")):
+                    old_stop = float(active_trade["stop_price"])
+                    if side == "LONG":
+                        reference_price = float(active_trade.get("highest_price_seen", last_price))
+                        trailing_stop_candidate = reference_price * (1 - TRAILING_STOP_BUFFER_PCT)
+                        if trailing_stop_candidate > old_stop:
+                            active_trade["stop_price"] = trailing_stop_candidate
+                            log_event("[TRAILING STOP UPDATED]")
+                            log_event(f"side={side}")
+                            log_event(f"old_stop={old_stop:.2f}")
+                            log_event(f"new_stop={trailing_stop_candidate:.2f}")
+                            log_event(f"reference_price={reference_price:.2f}")
+                    else:
+                        reference_price = float(active_trade.get("lowest_price_seen", last_price))
+                        trailing_stop_candidate = reference_price * (1 + TRAILING_STOP_BUFFER_PCT)
+                        if trailing_stop_candidate < old_stop:
+                            active_trade["stop_price"] = trailing_stop_candidate
+                            log_event("[TRAILING STOP UPDATED]")
+                            log_event(f"side={side}")
+                            log_event(f"old_stop={old_stop:.2f}")
+                            log_event(f"new_stop={trailing_stop_candidate:.2f}")
+                            log_event(f"reference_price={reference_price:.2f}")
+
                 exit_reason = None
+                exit_reason_label = None
                 exit_price = None
-                if last_price <= active_trade["stop_price"]:
-                    if active_trade["side"] == "LONG":
+                if side == "LONG":
+                    if last_price <= active_trade["stop_price"]:
                         exit_reason = "LOSS"
-                        exit_price = active_trade["stop_price"] * (1 - SIMULATED_SLIPPAGE)
-                elif last_price >= active_trade["take_profit_price"]:
-                    if active_trade["side"] == "LONG":
+                        exit_reason_label = get_stop_exit_reason(active_trade)
+                        exit_price = float(active_trade["stop_price"]) * (1 - SIMULATED_SLIPPAGE)
+                    elif last_price >= active_trade["take_profit_price"]:
                         exit_reason = "WIN"
-                        exit_price = active_trade["take_profit_price"] * (1 - SIMULATED_SLIPPAGE)
-                if active_trade["side"] == "SHORT":
+                        exit_reason_label = "PARTIAL_THEN_EXIT" if bool(active_trade.get("partial_tp_done")) else "TP"
+                        exit_price = float(active_trade["take_profit_price"]) * (1 - SIMULATED_SLIPPAGE)
+                else:
                     if last_price >= active_trade["stop_price"]:
                         exit_reason = "LOSS"
-                        exit_price = active_trade["stop_price"] * (1 + SIMULATED_SLIPPAGE)
+                        exit_reason_label = get_stop_exit_reason(active_trade)
+                        exit_price = float(active_trade["stop_price"]) * (1 + SIMULATED_SLIPPAGE)
                     elif last_price <= active_trade["take_profit_price"]:
                         exit_reason = "WIN"
-                        exit_price = active_trade["take_profit_price"] * (1 + SIMULATED_SLIPPAGE)
+                        exit_reason_label = "PARTIAL_THEN_EXIT" if bool(active_trade.get("partial_tp_done")) else "TP"
+                        exit_price = float(active_trade["take_profit_price"]) * (1 + SIMULATED_SLIPPAGE)
+
+                if ENABLE_TIME_EXIT and exit_reason is None and duration_minutes >= MAX_TRADE_DURATION_MINUTES:
+                    remaining_qty = get_trade_qty(active_trade)
+                    time_exit_gross = compute_gross_pnl(side, entry_price, last_price, remaining_qty)
+                    exit_reason = "WIN" if time_exit_gross >= 0 else "LOSS"
+                    exit_reason_label = "TIME_EXIT"
+                    exit_price = last_price
+                    log_event("[TIME EXIT]")
+                    log_event(f"side={side}")
+                    log_event(f"entry={entry_price:.2f}")
+                    log_event(f"exit={exit_price:.2f}")
+                    log_event(f"duration_minutes={duration_minutes:.2f}")
 
                 if exit_reason and exit_price is not None:
-                    gross_pnl = active_trade["position_size"] * (exit_price - active_trade["entry_price"]) if active_trade["side"] == "LONG" else active_trade["position_size"] * (active_trade["entry_price"] - exit_price)
-                    exit_fee = active_trade["position_notional"] * FUTURES_TAKER_FEE_RATE
-                    total_fees = active_trade["entry_fee"] + exit_fee
-                    net_pnl_value = gross_pnl - total_fees
-                    duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
-                    paper_usdt_balance += net_pnl_value
+                    remaining_qty = get_trade_qty(active_trade)
+                    gross_pnl = compute_gross_pnl(side, entry_price, exit_price, remaining_qty)
+                    exit_fee = compute_exit_fee(exit_price, remaining_qty)
+                    total_gross_pnl = float(active_trade.get("realized_gross_pnl", 0.0)) + gross_pnl
+                    total_fees = float(active_trade.get("realized_fees", active_trade.get("entry_fee", 0.0))) + exit_fee
+                    net_pnl_value = total_gross_pnl - total_fees
+                    paper_usdt_balance += gross_pnl - exit_fee
                     consecutive_losses = consecutive_losses + 1 if exit_reason == "LOSS" else 0
+                    active_trade["exit_reason"] = exit_reason_label
+                    if exit_reason_label == "TIME_EXIT":
+                        log_event(f"net_pnl={net_pnl_value:.4f}")
                     log_event(
-                        f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={active_trade['position_size']:.6f} side={active_trade['side']} "
+                        f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={remaining_qty:.6f} side={active_trade['side']} "
                         f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl_value:.4f} balance={paper_usdt_balance:.4f}"
                     )
-                    update_metrics(net_pnl_value, gross_pnl, total_fees, paper_usdt_balance, active_trade["side"])
+                    update_metrics(net_pnl_value, total_gross_pnl, total_fees, paper_usdt_balance, active_trade["side"])
                     update_trade_duration_metrics(duration_minutes)
                     log_trade_exit(
                         active_trade["side"],
-                        active_trade["entry_price"],
+                        entry_price,
                         exit_price,
-                        active_trade["position_size"],
-                        gross_pnl,
+                        float(active_trade.get("original_qty", remaining_qty)),
+                        total_gross_pnl,
                         total_fees,
                         net_pnl_value,
                         paper_usdt_balance,
                         duration_minutes,
+                        exit_reason_label,
+                        bool(active_trade.get("partial_tp_done")),
+                        float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
+                        float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                     )
                     print_trade_closed_summary(
                         exit_reason,
                         active_trade["side"],
-                        active_trade["entry_price"],
+                        entry_price,
                         exit_price,
-                        active_trade["position_size"],
-                        gross_pnl,
+                        float(active_trade.get("original_qty", remaining_qty)),
+                        total_gross_pnl,
                         total_fees,
                         net_pnl_value,
                         paper_usdt_balance,
                         duration_minutes,
+                        exit_reason_label or "SL",
+                        bool(active_trade.get("partial_tp_done")),
+                        float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
+                        float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                     )
                     active_trade = None
                     in_position = False
@@ -1375,11 +1574,13 @@ while True:
                 pos_amt = get_position_amt()
                 if abs(pos_amt) < 1e-12:
                     usdt_now = get_usdt_balance()
+                    active_trade["exit_reason"] = active_trade.get("exit_reason") or ("PARTIAL_THEN_EXIT" if bool(active_trade.get("partial_tp_done")) else "TP")
                     gross_pnl = usdt_now - active_trade["usdt_before"]
                     fees = 0.0
                     net_pnl_value = gross_pnl
                     result = "LOSS" if net_pnl_value < 0 else "WIN"
                     exit_price = get_last_price()
+                    update_excursions(active_trade, exit_price)
                     duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
                     log_event(f"[FUTURES EXIT {result}] gross_pnl={gross_pnl:.4f} fees={fees:.4f} net_pnl={net_pnl_value:.4f} balance={usdt_now:.4f}")
                     consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
@@ -1395,6 +1596,10 @@ while True:
                         net_pnl_value,
                         usdt_now,
                         duration_minutes,
+                        active_trade.get("exit_reason"),
+                        bool(active_trade.get("partial_tp_done")),
+                        float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
+                        float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                     )
                     print_trade_closed_summary(
                         result,
@@ -1407,12 +1612,37 @@ while True:
                         net_pnl_value,
                         usdt_now,
                         duration_minutes,
+                        str(active_trade.get("exit_reason")),
+                        bool(active_trade.get("partial_tp_done")),
+                        float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
+                        float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                     )
                     active_trade = None
                     in_position = False
                     last_position_monitor_log_time = 0.0
                 else:
                     last_price = get_last_price()
+                    update_excursions(active_trade, last_price)
+                    duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
+                    if ENABLE_TIME_EXIT and duration_minutes >= MAX_TRADE_DURATION_MINUTES:
+                        side = str(active_trade["side"])
+                        close_side = "SELL" if side == "LONG" else "BUY"
+                        qty = float(active_trade.get("qty", abs(pos_amt)))
+                        call_with_time_sync(
+                            "futures_create_order(TIME_EXIT_MARKET)",
+                            client.futures_create_order,
+                            symbol=SYMBOL,
+                            side=close_side,
+                            type="MARKET",
+                            quantity=qty,
+                            reduceOnly=True,
+                        )
+                        active_trade["exit_reason"] = "TIME_EXIT"
+                        log_event("[TIME EXIT]")
+                        log_event(f"side={side}")
+                        log_event(f"entry={float(active_trade['entry_price']):.2f}")
+                        log_event(f"exit={last_price:.2f}")
+                        log_event(f"duration_minutes={duration_minutes:.2f}")
                     last_position_monitor_log_time = maybe_log_position_monitor(active_trade, last_price, last_position_monitor_log_time)
                     export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                     time.sleep(POLL_SECONDS)
