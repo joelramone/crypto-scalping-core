@@ -38,7 +38,7 @@ MICRO_BREAKDOWN_FACTOR = 1.001
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 RISK_PER_TRADE_USDT = float(os.getenv("RISK_PER_TRADE_USDT", "2.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
-TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.012")))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.005")))
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "10"))
@@ -52,14 +52,12 @@ DEBUG_DISABLE_PRICE_FILTER = False
 POSITION_MONITOR_INTERVAL_SECONDS = 60
 POSITION_MONITOR_PROXIMITY_THRESHOLD = 0.15
 ENABLE_PARTIAL_TP = True
-PARTIAL_TP_R = float(os.getenv("PARTIAL_TP_R", "0.7"))
-PARTIAL_TP_CLOSE_FRACTION = float(os.getenv("PARTIAL_TP_CLOSE_FRACTION", "0.6"))
+PARTIAL_TP_TRIGGER_PCT = float(os.getenv("PARTIAL_TP_TRIGGER_PCT", "0.0025"))
+PARTIAL_TP_CLOSE_FRACTION = float(os.getenv("PARTIAL_TP_CLOSE_FRACTION", "0.7"))
 ENABLE_BREAK_EVEN_STOP = True
 BREAK_EVEN_TRIGGER_PCT = float(os.getenv("BREAK_EVEN_TRIGGER_PCT", "0.003"))
-TINY_PROFIT_BUFFER_PCT = float(os.getenv("TINY_PROFIT_BUFFER_PCT", "0.0001"))
 ENABLE_TIME_EXIT = True
-MAX_TRADE_DURATION_MINUTES_NO_PARTIAL = int(os.getenv("MAX_TRADE_DURATION_MINUTES_NO_PARTIAL", "7"))
-MAX_TRADE_DURATION_MINUTES_WITH_PARTIAL = int(os.getenv("MAX_TRADE_DURATION_MINUTES_WITH_PARTIAL", "12"))
+MAX_TRADE_DURATION_MINUTES = int(os.getenv("MAX_TRADE_DURATION_MINUTES", "3"))
 ENABLE_TRAILING_STOP_AFTER_PARTIAL = True
 TRAILING_STOP_BUFFER_PCT = 0.003
 ALLOW_LOW_ACTIVITY = env_bool("ALLOW_LOW_ACTIVITY", False)
@@ -1134,6 +1132,10 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
         return None, "skipped_balance_insufficient"
     estimated_entry_fee = notional * FUTURES_TAKER_FEE_RATE
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
+    expected_move_usdt = abs(take_profit_price - entry_price) * qty
+    estimated_total_fees = estimated_entry_fee + estimated_exit_fee
+    if expected_move_usdt < (2.0 * estimated_total_fees):
+        return None, "skipped_min_profitability"
     return {
         "current_price": current_price,
         "entry_price": entry_price,
@@ -1144,6 +1146,8 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
         "notional": notional,
         "estimated_entry_fee": estimated_entry_fee,
         "estimated_exit_fee": estimated_exit_fee,
+        "expected_move_usdt": expected_move_usdt,
+        "estimated_total_fees": estimated_total_fees,
     }, ""
 
 
@@ -1392,14 +1396,24 @@ def compute_fee_buffer_price(entry_price: float) -> float:
 
 def compute_break_even_stop_price(side: str, entry_price: float) -> float:
     fee_buffer_price = compute_fee_buffer_price(entry_price)
-    tiny_profit_buffer = entry_price * TINY_PROFIT_BUFFER_PCT
     if side == "LONG":
-        return entry_price + fee_buffer_price + tiny_profit_buffer
-    return entry_price - fee_buffer_price - tiny_profit_buffer
+        return entry_price + fee_buffer_price
+    return entry_price - fee_buffer_price
 
 
 def get_time_exit_limit_minutes(active_trade_state: Dict[str, Any]) -> int:
-    return MAX_TRADE_DURATION_MINUTES_WITH_PARTIAL if bool(active_trade_state.get("partial_tp_done")) else MAX_TRADE_DURATION_MINUTES_NO_PARTIAL
+    return MAX_TRADE_DURATION_MINUTES
+
+
+def log_trade_performance_metrics(active_trade_state: Dict[str, Any], duration_minutes: float, net_pnl_value: float) -> None:
+    mfe_usdt = float(active_trade_state.get("max_favorable_excursion_usdt", 0.0))
+    captured_profit_usdt = net_pnl_value
+    captured_vs_mfe_pct = (captured_profit_usdt / mfe_usdt * 100.0) if mfe_usdt > 0 else 0.0
+    log_event("[TRADE PERFORMANCE]")
+    log_event(f"time_in_trade_minutes={duration_minutes:.2f}")
+    log_event(f"mfe_usdt={mfe_usdt:.4f}")
+    log_event(f"captured_profit_usdt={captured_profit_usdt:.4f}")
+    log_event(f"captured_vs_mfe_pct={captured_vs_mfe_pct:.2f}")
 
 
 def update_excursions(active_trade_state: Dict[str, Any], last_price: float) -> None:
@@ -1476,9 +1490,8 @@ while True:
                 duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
 
                 if ENABLE_PARTIAL_TP and not bool(active_trade.get("partial_tp_done")) and current_qty > 0:
-                    risk_per_unit = abs(entry_price - float(active_trade.get("initial_stop_price", active_trade.get("stop_price", entry_price))))
-                    partial_trigger_price = entry_price + (risk_per_unit * PARTIAL_TP_R) if side == "LONG" else entry_price - (risk_per_unit * PARTIAL_TP_R)
-                    partial_trigger_hit = (side == "LONG" and last_price >= partial_trigger_price) or (side == "SHORT" and last_price <= partial_trigger_price)
+                    favorable_move_pct = ((last_price - entry_price) / entry_price) if side == "LONG" else ((entry_price - last_price) / entry_price)
+                    partial_trigger_hit = favorable_move_pct >= PARTIAL_TP_TRIGGER_PCT
                     if partial_trigger_hit:
                         close_qty = max(round_step_size(current_qty * PARTIAL_TP_CLOSE_FRACTION, qty_step), 0.0)
                         if close_qty <= 0:
@@ -1494,10 +1507,8 @@ while True:
                             active_trade["position_qty"] = remaining_qty
                             active_trade["partial_tp_done"] = True
                             be_stop = compute_break_even_stop_price(side, entry_price)
-                            old_stop = float(active_trade["stop_price"])
-                            if (side == "LONG" and be_stop > old_stop) or (side == "SHORT" and be_stop < old_stop):
-                                active_trade["stop_price"] = be_stop
-                                active_trade["break_even_armed"] = True
+                            active_trade["stop_price"] = be_stop
+                            active_trade["break_even_armed"] = True
                             active_trade["realized_gross_pnl"] = float(active_trade.get("realized_gross_pnl", 0.0)) + partial_gross
                             active_trade["realized_fees"] = float(active_trade.get("realized_fees", active_trade.get("entry_fee", 0.0))) + partial_exit_fee
                             active_trade["realized_net_pnl"] = float(active_trade.get("realized_net_pnl", -float(active_trade.get("entry_fee", 0.0)))) + partial_net
@@ -1508,7 +1519,7 @@ while True:
                             log_event(f"closed_qty={close_qty:.6f}")
                             log_event(f"remaining_qty={remaining_qty:.6f}")
                             log_event(f"realized_net_pnl={partial_net:.4f}")
-                            log_event(f"partial_trigger_price={partial_trigger_price:.2f}")
+                            log_event(f"favorable_move_pct={favorable_move_pct * 100.0:.4f}")
                             log_event(f"new_stop={float(active_trade["stop_price"]):.2f}")
 
                 if ENABLE_BREAK_EVEN_STOP and not bool(active_trade.get("break_even_armed")):
@@ -1601,6 +1612,7 @@ while True:
                     )
                     update_metrics(net_pnl_value, total_gross_pnl, total_fees, paper_usdt_balance, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")))
                     update_trade_duration_metrics(duration_minutes)
+                    log_trade_performance_metrics(active_trade, duration_minutes, net_pnl_value)
                     log_trade_exit(
                         active_trade["side"],
                         entry_price,
@@ -1658,6 +1670,7 @@ while True:
                     consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
                     update_metrics(net_pnl_value, gross_pnl, fees, usdt_now, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")))
                     update_trade_duration_metrics(duration_minutes)
+                    log_trade_performance_metrics(active_trade, duration_minutes, net_pnl_value)
                     log_trade_exit(
                         active_trade["side"],
                         active_trade["entry_price"],
@@ -1871,7 +1884,12 @@ while True:
                     log_event(f"Trades this hour: {len(trade_times)}/{MAX_TRADES_PER_HOUR}")
                 else:
                     execution_skip_reason = execution_error or "skipped_qty_invalid"
-                    blocked_reason = "qty_invalid" if execution_skip_reason in {"skipped_qty_invalid", "skipped_rounding_to_zero", "skipped_min_notional"} else "execution_error"
+                    if execution_skip_reason in {"skipped_qty_invalid", "skipped_rounding_to_zero", "skipped_min_notional"}:
+                        blocked_reason = "qty_invalid"
+                    elif execution_skip_reason == "skipped_min_profitability":
+                        blocked_reason = "min_profitability"
+                    else:
+                        blocked_reason = "execution_error"
                     log_event(f"[ENTRY BLOCKED] reason={blocked_reason}")
             else:
                 execution_skip_reason = "skipped_execution_gate"
