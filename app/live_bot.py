@@ -35,6 +35,10 @@ EMA_SLOW = 200
 MIN_VOLUME_SCORE = 0.7
 MICRO_BREAKOUT_FACTOR = 0.999
 MICRO_BREAKDOWN_FACTOR = 1.001
+MIN_BREAKOUT_BODY_RATIO = float(os.getenv("MIN_BREAKOUT_BODY_RATIO", "0.7"))
+MAX_BREAKOUT_WICK_RATIO = float(os.getenv("MAX_BREAKOUT_WICK_RATIO", "0.3"))
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
+ATR_AVG_WINDOW = int(os.getenv("ATR_AVG_WINDOW", "20"))
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 RISK_PER_TRADE_USDT = float(os.getenv("RISK_PER_TRADE_USDT", "2.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
@@ -842,6 +846,20 @@ def calculate_atr(klines: List[List[Any]], period: int = 14) -> Optional[float]:
     return sum(trs[-period:]) / period
 
 
+def calculate_atr_series(klines: List[List[Any]], period: int) -> List[float]:
+    if len(klines) < period + 1:
+        return []
+    trs: List[float] = []
+    for idx in range(1, len(klines)):
+        high = float(klines[idx][2])
+        low = float(klines[idx][3])
+        prev_close = float(klines[idx - 1][4])
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    if len(trs) < period:
+        return []
+    return [sum(trs[idx - period : idx]) / period for idx in range(period, len(trs) + 1)]
+
+
 last_trend_close_time = None
 last_trend_value = "FLAT"
 last_trend_ema_fast = None
@@ -1028,7 +1046,18 @@ def get_closed_candle_data() -> Optional[Dict[str, Any]]:
     close_price = float(closed[4])
     close_volume = float(closed[5])
     close_time = int(closed[6])
-    atr14 = calculate_atr(klines[:-1], 14)
+    atr_series = calculate_atr_series(klines[:-1], ATR_PERIOD)
+    atr14 = atr_series[-1] if atr_series else None
+    atr_avg = sum(atr_series[-ATR_AVG_WINDOW:]) / ATR_AVG_WINDOW if len(atr_series) >= ATR_AVG_WINDOW else None
+    open_price = float(closed[1])
+    high_price = float(closed[2])
+    low_price = float(closed[3])
+    candle_range = high_price - low_price
+    candle_body = abs(close_price - open_price)
+    upper_wick = high_price - max(open_price, close_price)
+    lower_wick = min(open_price, close_price) - low_price
+    body_ratio = (candle_body / candle_range) if candle_range > 0 else 0.0
+    wick_ratio = ((upper_wick + lower_wick) / candle_range) if candle_range > 0 else 1.0
     volume_sma20 = sum(float(k[5]) for k in vol20_history) / len(vol20_history)
     volatility_score = (atr14 / close_price) if atr14 and close_price > 0 else 0.0
     volume_score = (close_volume / volume_sma20) if volume_sma20 > 0 else 0.0
@@ -1038,8 +1067,12 @@ def get_closed_candle_data() -> Optional[Dict[str, Any]]:
         "close_time": close_time,
         "close_price": close_price,
         "close_volume": close_volume,
-        "high_price": float(closed[2]),
-        "low_price": float(closed[3]),
+        "high_price": high_price,
+        "low_price": low_price,
+        "body_ratio": body_ratio,
+        "wick_ratio": wick_ratio,
+        "atr": atr14,
+        "atr_avg": atr_avg,
         "volume_score": volume_score,
         "highest_high": max(float(c[2]) for c in breakout_history),
         "lowest_low": min(float(c[3]) for c in breakout_history),
@@ -1769,14 +1802,21 @@ while True:
         trend, ema50, ema200 = get_trend_state()
         long_breakout = candle["close_price"] > candle["highest_high"] * MICRO_BREAKOUT_FACTOR
         short_breakdown = candle["close_price"] < candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
+        trend_filter_long_ok = ema200 is not None and candle["close_price"] > ema200
+        trend_filter_short_ok = ema200 is not None and candle["close_price"] < ema200
+        trend_filter_ok = (long_breakout and trend_filter_long_ok) or (short_breakdown and trend_filter_short_ok)
         volume_ok = candle["volume_score"] >= MIN_VOLUME_SCORE
+        candle_strength_ok = candle["body_ratio"] >= MIN_BREAKOUT_BODY_RATIO and candle["wick_ratio"] <= MAX_BREAKOUT_WICK_RATIO
+        atr_value = candle.get("atr")
+        atr_avg = candle.get("atr_avg")
+        volatility_ok = atr_value is not None and atr_avg is not None and atr_value > atr_avg
         breakout_ok = long_breakout or short_breakdown
         candle_valid = candle["close_time"] is not None
         current_price = candle["close_price"]
         candle_high = candle["high_price"]
         candle_low = candle["low_price"]
-        long_signal = long_breakout and volume_ok
-        short_signal = short_breakdown and volume_ok
+        long_signal = long_breakout and volume_ok and trend_filter_long_ok and candle_strength_ok and volatility_ok
+        short_signal = short_breakdown and volume_ok and trend_filter_short_ok and candle_strength_ok and volatility_ok
         trigger_price = candle["highest_high"] * MICRO_BREAKOUT_FACTOR if long_signal else candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
         if DEBUG_DISABLE_PRICE_FILTER:
             price_valid = True
@@ -1817,6 +1857,9 @@ while True:
             and trade_limit_ok
             and volume_ok
             and breakout_ok
+            and trend_filter_ok
+            and candle_strength_ok
+            and volatility_ok
             and candle_valid
             and price_valid
             and not low_activity_blocked
@@ -1837,6 +1880,9 @@ while True:
             log_event(f"signal_detected={signal_detected}")
             log_event(f"volume_ok={volume_ok}")
             log_event(f"breakout_ok={breakout_ok}")
+            log_event(f"trend_filter_ok={trend_filter_ok}")
+            log_event(f"candle_strength_ok={candle_strength_ok}")
+            log_event(f"volatility_ok={volatility_ok}")
             log_event(f"price_valid={price_valid}")
             log_event(f"candle_valid={candle_valid}")
             log_event(f"in_position={in_position}")
@@ -1850,6 +1896,12 @@ while True:
         if not signal_detected:
             if not volume_ok:
                 last_reason = "low_volume"
+            elif not trend_filter_ok:
+                last_reason = "trend_filter"
+            elif not candle_strength_ok:
+                last_reason = "weak_candle"
+            elif not volatility_ok:
+                last_reason = "low_volatility"
             elif not long_breakout and not short_breakdown:
                 last_reason = "no_breakout"
             else:
