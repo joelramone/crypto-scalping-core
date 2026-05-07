@@ -14,18 +14,26 @@ class BreakoutTrendStrategy(BaseStrategy):
         low = data.get("low") or []
         open_prices = data.get("open") or []
         atr = data.get("atr") or []
+        volume = data.get("volume") or []
 
-        if not close or not high or not low or not open_prices or not atr:
+        if not close or not high or not low or not open_prices or not atr or not volume:
             return None
 
         lookback_period = int(getattr(self.config, "lookback_period", 20))
         trend_ema_period = int(getattr(self.config, "trend_ema_period", 200))
         atr_avg_period = int(getattr(self.config, "atr_avg_period", 20))
-        min_required = max(lookback_period + 1, trend_ema_period, atr_avg_period)
+        min_sequence_bars = int(getattr(self.config, "confirmation_sequence_bars", 3))
+        volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
+
+        min_required = max(
+            lookback_period + min_sequence_bars,
+            trend_ema_period,
+            atr_avg_period,
+            volume_avg_period,
+        )
         if len(close) < min_required:
             return None
 
-        price = float(close[-1])
         atr_value = float(atr[-1])
         if atr_value <= 0:
             return None
@@ -33,36 +41,62 @@ class BreakoutTrendStrategy(BaseStrategy):
         if not self._passes_volatility_filter(atr):
             return None
 
-        if not self._passes_candle_strength_filter(open_prices, high, low, close):
+        if not self._passes_volume_filter(volume):
             return None
-
-        window = close[-lookback_period:-1]
-        if not window:
-            return None
-
-        breakout_buffer = atr_value * float(getattr(self.config, "breakout_buffer_atr", 0.0))
-        window_high = max(window)
-        window_low = min(window)
 
         trend_ema = self._ema(close, trend_ema_period)
         if trend_ema is None:
             return None
 
-        if price >= (window_high - breakout_buffer) and price > trend_ema:
-            return self._build_signal(side="LONG", entry=price, atr_value=atr_value)
+        breakout_index = -3
+        pullback_index = -2
+        confirmation_index = -1
 
-        if price <= (window_low + breakout_buffer) and price < trend_ema:
-            return self._build_signal(side="SHORT", entry=price, atr_value=atr_value)
+        breakout_close = float(close[breakout_index])
+        pullback_close = float(close[pullback_index])
+        confirmation_close = float(close[confirmation_index])
+        confirmation_open = float(open_prices[confirmation_index])
+
+        breakout_buffer = atr_value * float(getattr(self.config, "breakout_buffer_atr", 0.0))
+        pullback_tolerance = atr_value * float(getattr(self.config, "pullback_tolerance_atr", 0.20))
+        breakout_window = close[-(lookback_period + min_sequence_bars):-min_sequence_bars]
+        if not breakout_window:
+            return None
+
+        breakout_high = max(float(value) for value in breakout_window)
+        breakout_low = min(float(value) for value in breakout_window)
+
+        if (
+            breakout_close >= (breakout_high + breakout_buffer)
+            and pullback_close >= (breakout_high - pullback_tolerance)
+            and pullback_close <= breakout_close
+            and confirmation_close > confirmation_open
+            and confirmation_close > pullback_close
+            and confirmation_close > trend_ema
+            and self._passes_candle_strength_filter(open_prices, high, low, close, confirmation_index)
+        ):
+            return self._build_signal(side="LONG", entry=confirmation_close, atr_value=atr_value)
+
+        if (
+            breakout_close <= (breakout_low - breakout_buffer)
+            and pullback_close <= (breakout_low + pullback_tolerance)
+            and pullback_close >= breakout_close
+            and confirmation_close < confirmation_open
+            and confirmation_close < pullback_close
+            and confirmation_close < trend_ema
+            and self._passes_candle_strength_filter(open_prices, high, low, close, confirmation_index)
+        ):
+            return self._build_signal(side="SHORT", entry=confirmation_close, atr_value=atr_value)
 
         return None
 
-    def _passes_candle_strength_filter(self, open_prices, high, low, close) -> bool:
+    def _passes_candle_strength_filter(self, open_prices, high, low, close, index: int = -1) -> bool:
         body_ratio_min = float(getattr(self.config, "breakout_body_ratio_min", 0.70))
 
-        open_price = float(open_prices[-1])
-        close_price = float(close[-1])
-        high_price = float(high[-1])
-        low_price = float(low[-1])
+        open_price = float(open_prices[index])
+        close_price = float(close[index])
+        high_price = float(high[index])
+        low_price = float(low[index])
 
         candle_range = high_price - low_price
         if candle_range <= 0:
@@ -87,6 +121,16 @@ class BreakoutTrendStrategy(BaseStrategy):
         current_atr = float(atr[-1])
         rolling_avg = sum(float(value) for value in atr[-atr_avg_period:]) / atr_avg_period
         return current_atr > rolling_avg
+
+    def _passes_volume_filter(self, volume) -> bool:
+        volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
+        if len(volume) < volume_avg_period:
+            return False
+
+        current_volume = float(volume[-1])
+        avg_volume = sum(float(value) for value in volume[-volume_avg_period:]) / volume_avg_period
+        volume_multiplier = float(getattr(self.config, "volume_multiplier", 1.0))
+        return current_volume >= (avg_volume * volume_multiplier)
 
     @staticmethod
     def _ema(values, period: int) -> float | None:
