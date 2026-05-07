@@ -19,18 +19,11 @@ class BreakoutTrendStrategy(BaseStrategy):
         if not close or not high or not low or not open_prices or not atr or not volume:
             return None
 
-        lookback_period = int(getattr(self.config, "lookback_period", 20))
-        trend_ema_period = int(getattr(self.config, "trend_ema_period", 200))
-        atr_avg_period = int(getattr(self.config, "atr_avg_period", 20))
-        min_sequence_bars = int(getattr(self.config, "confirmation_sequence_bars", 3))
+        ema_period = int(getattr(self.config, "ema_period", 20))
         volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
+        atr_avg_period = int(getattr(self.config, "atr_avg_period", 20))
 
-        min_required = max(
-            lookback_period + min_sequence_bars,
-            trend_ema_period,
-            atr_avg_period,
-            volume_avg_period,
-        )
+        min_required = max(ema_period, volume_avg_period + 1, atr_avg_period)
         if len(close) < min_required:
             return None
 
@@ -41,58 +34,94 @@ class BreakoutTrendStrategy(BaseStrategy):
         if not self._passes_volatility_filter(atr):
             return None
 
-        if not self._passes_volume_filter(volume):
+        ema_value = self._ema(close, ema_period)
+        if ema_value is None:
             return None
 
-        trend_ema = self._ema(close, trend_ema_period)
-        if trend_ema is None:
+        if not self._passes_volume_spike_filter(volume):
             return None
 
-        breakout_index = -3
-        pullback_index = -2
-        confirmation_index = -1
+        if not self._is_bullish_confirmation(open_prices, close):
+            return self._maybe_short(data, ema_value, atr_value)
 
-        breakout_close = float(close[breakout_index])
-        pullback_close = float(close[pullback_index])
-        confirmation_close = float(close[confirmation_index])
-        confirmation_open = float(open_prices[confirmation_index])
-
-        breakout_buffer = atr_value * float(getattr(self.config, "breakout_buffer_atr", 0.0))
-        pullback_tolerance = atr_value * float(getattr(self.config, "pullback_tolerance_atr", 0.20))
-        breakout_window = close[-(lookback_period + min_sequence_bars):-min_sequence_bars]
-        if not breakout_window:
+        long_rsi = self._resolve_rsi(data, side="LONG")
+        if long_rsi is None:
             return None
 
-        breakout_high = max(float(value) for value in breakout_window)
-        breakout_low = min(float(value) for value in breakout_window)
-
+        extension = atr_value * float(getattr(self.config, "extension_atr_multiplier", 0.2))
         if (
-            breakout_close >= (breakout_high + breakout_buffer)
-            and pullback_close >= (breakout_high - pullback_tolerance)
-            and pullback_close <= breakout_close
-            and confirmation_close > confirmation_open
-            and confirmation_close > pullback_close
-            and confirmation_close > trend_ema
-            and self._passes_candle_strength_filter(open_prices, high, low, close, confirmation_index)
+            long_rsi < float(getattr(self.config, "rsi_oversold", 20.0))
+            and float(close[-2]) < (ema_value - extension)
+            and self._is_bearish_exhaustion_candle(open_prices, high, low, close, -2)
         ):
-            return self._build_signal(side="LONG", entry=confirmation_close, atr_value=atr_value)
+            entry = float(close[-1])
+            return self._build_signal(side="LONG", entry=entry, atr_value=atr_value)
 
+        return self._maybe_short(data, ema_value, atr_value)
+
+    def _maybe_short(self, data, ema_value: float, atr_value: float):
+        close = data["close"]
+        high = data["high"]
+        low = data["low"]
+        open_prices = data["open"]
+
+        if not self._is_bearish_confirmation(open_prices, close):
+            return None
+
+        short_rsi = self._resolve_rsi(data, side="SHORT")
+        if short_rsi is None:
+            return None
+
+        extension = atr_value * float(getattr(self.config, "extension_atr_multiplier", 0.2))
         if (
-            breakout_close <= (breakout_low - breakout_buffer)
-            and pullback_close <= (breakout_low + pullback_tolerance)
-            and pullback_close >= breakout_close
-            and confirmation_close < confirmation_open
-            and confirmation_close < pullback_close
-            and confirmation_close < trend_ema
-            and self._passes_candle_strength_filter(open_prices, high, low, close, confirmation_index)
+            short_rsi > float(getattr(self.config, "rsi_overbought", 80.0))
+            and float(close[-2]) > (ema_value + extension)
+            and self._is_bullish_exhaustion_candle(open_prices, high, low, close, -2)
         ):
-            return self._build_signal(side="SHORT", entry=confirmation_close, atr_value=atr_value)
+            entry = float(close[-1])
+            return self._build_signal(side="SHORT", entry=entry, atr_value=atr_value)
 
         return None
 
-    def _passes_candle_strength_filter(self, open_prices, high, low, close, index: int = -1) -> bool:
-        body_ratio_min = float(getattr(self.config, "breakout_body_ratio_min", 0.70))
+    def _resolve_rsi(self, data, side: str) -> float | None:
+        series_key = "rsi_7"
+        if data.get(series_key):
+            return float(data[series_key][-2])
 
+        if data.get("rsi"):
+            return float(data["rsi"][-2])
+
+        close = data.get("close") or []
+        period = int(getattr(self.config, "rsi_period", 7))
+        return self._rsi(close, period, -2, side)
+
+    def _passes_volatility_filter(self, atr) -> bool:
+        atr_avg_period = int(getattr(self.config, "atr_avg_period", 20))
+        if len(atr) < atr_avg_period:
+            return False
+
+        current_atr = float(atr[-1])
+        rolling_avg = sum(float(value) for value in atr[-atr_avg_period:]) / atr_avg_period
+        min_ratio = float(getattr(self.config, "min_atr_ratio", 1.0))
+        return rolling_avg > 0 and (current_atr / rolling_avg) >= min_ratio
+
+    def _passes_volume_spike_filter(self, volume) -> bool:
+        volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
+        if len(volume) < volume_avg_period + 1:
+            return False
+
+        current_volume = float(volume[-1])
+        avg_volume = sum(float(value) for value in volume[-(volume_avg_period + 1):-1]) / volume_avg_period
+        volume_multiplier = float(getattr(self.config, "volume_multiplier", 1.2))
+        return current_volume >= (avg_volume * volume_multiplier)
+
+    def _is_bearish_exhaustion_candle(self, open_prices, high, low, close, index: int) -> bool:
+        return self._is_exhaustion(open_prices, high, low, close, index, bullish=False)
+
+    def _is_bullish_exhaustion_candle(self, open_prices, high, low, close, index: int) -> bool:
+        return self._is_exhaustion(open_prices, high, low, close, index, bullish=True)
+
+    def _is_exhaustion(self, open_prices, high, low, close, index: int, bullish: bool) -> bool:
         open_price = float(open_prices[index])
         close_price = float(close[index])
         high_price = float(high[index])
@@ -104,33 +133,25 @@ class BreakoutTrendStrategy(BaseStrategy):
 
         body = abs(close_price - open_price)
         body_ratio = body / candle_range
-        if body_ratio < body_ratio_min:
+        min_body_ratio = float(getattr(self.config, "min_body_ratio", 0.2))
+        if body_ratio < min_body_ratio:
             return False
 
         upper_wick = high_price - max(open_price, close_price)
         lower_wick = min(open_price, close_price) - low_price
-        wick_ratio = (upper_wick + lower_wick) / candle_range
+        wick_ratio_min = float(getattr(self.config, "exhaustion_wick_ratio_min", 0.45))
 
-        return wick_ratio <= (1.0 - body_ratio_min)
+        if bullish:
+            return close_price > open_price and upper_wick / candle_range >= wick_ratio_min
+        return close_price < open_price and lower_wick / candle_range >= wick_ratio_min
 
-    def _passes_volatility_filter(self, atr) -> bool:
-        atr_avg_period = int(getattr(self.config, "atr_avg_period", 20))
-        if len(atr) < atr_avg_period:
-            return False
+    @staticmethod
+    def _is_bullish_confirmation(open_prices, close) -> bool:
+        return float(close[-1]) > float(open_prices[-1])
 
-        current_atr = float(atr[-1])
-        rolling_avg = sum(float(value) for value in atr[-atr_avg_period:]) / atr_avg_period
-        return current_atr > rolling_avg
-
-    def _passes_volume_filter(self, volume) -> bool:
-        volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
-        if len(volume) < volume_avg_period:
-            return False
-
-        current_volume = float(volume[-1])
-        avg_volume = sum(float(value) for value in volume[-volume_avg_period:]) / volume_avg_period
-        volume_multiplier = float(getattr(self.config, "volume_multiplier", 1.0))
-        return current_volume >= (avg_volume * volume_multiplier)
+    @staticmethod
+    def _is_bearish_confirmation(open_prices, close) -> bool:
+        return float(close[-1]) < float(open_prices[-1])
 
     @staticmethod
     def _ema(values, period: int) -> float | None:
@@ -142,6 +163,31 @@ class BreakoutTrendStrategy(BaseStrategy):
         for value in values[period:]:
             ema = ((float(value) - ema) * multiplier) + ema
         return ema
+
+    @staticmethod
+    def _rsi(values, period: int, index: int, side: str) -> float | None:
+        if len(values) < period + 2:
+            return None
+
+        end = len(values) + index + 1
+        if end <= period:
+            return None
+
+        window = values[end - period - 1:end]
+        gains = []
+        losses = []
+        for i in range(1, len(window)):
+            delta = float(window[i]) - float(window[i - 1])
+            gains.append(max(delta, 0.0))
+            losses.append(abs(min(delta, 0.0)))
+
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0 if side == "SHORT" else 50.0
+
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
 
     def _build_signal(self, side: str, entry: float, atr_value: float) -> dict[str, float | str | bool]:
         sl_distance = atr_value * float(self.config.atr_sl_multiplier)
