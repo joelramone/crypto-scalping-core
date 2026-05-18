@@ -1,38 +1,54 @@
+from app.agents.regime_agent import RegimeAgent
 from app.strategies.multi_strategy_engine import MultiStrategyEngine
 
 
 class StubStrategy:
-    def __init__(self):
+    def __init__(self, side: str):
+        self.side = side
         self.calls = 0
-        self.trade_log = []
 
-    def generate_signal(self, _market_data):
+    def generate_signal(self, _market_data, regime=None):
+        _ = regime
         self.calls += 1
-        return {"side": "LONG"}
-
-    def consume_last_signal_context(self):
-        return {"strategy_name": "BreakoutTrendStrategy", "regime_detected": "HIGH_VOLATILITY"}
-
-    def record_trade_outcome(self, payload):
-        self.trade_log.append(payload)
+        return {"side": self.side}
 
 
-def test_runs_in_single_strategy_mode():
-    strategy = StubStrategy()
-    engine = MultiStrategyEngine(strategy=strategy)
+class StubRegimeAgent:
+    def __init__(self, regime: str):
+        self.regime = regime
 
-    signal = engine.generate_signal({"close": [100.0, 101.0], "atr": [1.0]})
+    def classify(self, _market_data):
+        return self.regime
+
+
+def _market_data():
+    return {
+        "close": [100.0 + i for i in range(30)],
+        "high": [101.0 + i for i in range(30)],
+        "low": [99.0 + i for i in range(30)],
+        "atr": [1.0 for _ in range(30)],
+    }
+
+
+def test_routes_to_breakout_on_trending_regime():
+    breakout = StubStrategy(side="LONG")
+    mean_rev = StubStrategy(side="SHORT")
+    engine = MultiStrategyEngine(breakout_strategy=breakout, mean_reversion_strategy=mean_rev, regime_agent=StubRegimeAgent(RegimeAgent.TRENDING))
+
+    signal = engine.generate_signal(_market_data())
 
     assert signal == {"side": "LONG"}
-    assert strategy.calls == 1
+    assert breakout.calls == 1
+    assert mean_rev.calls == 0
 
 
-def test_exposes_context_and_trade_log_from_wrapped_strategy():
-    strategy = StubStrategy()
-    engine = MultiStrategyEngine(strategy=strategy)
+def test_routes_to_mean_reversion_on_low_activity():
+    breakout = StubStrategy(side="LONG")
+    mean_rev = StubStrategy(side="SHORT")
+    engine = MultiStrategyEngine(breakout_strategy=breakout, mean_reversion_strategy=mean_rev, regime_agent=StubRegimeAgent(RegimeAgent.LOW_ACTIVITY))
 
-    context = engine.consume_last_signal_context()
-    assert context == {"strategy_name": "BreakoutTrendStrategy", "regime_detected": "HIGH_VOLATILITY"}
+    signal = engine.generate_signal(_market_data())
 
-    engine.record_trade_outcome({"r_multiple": 1.8})
-    assert engine.trade_log == [{"r_multiple": 1.8}]
+    assert signal == {"side": "SHORT"}
+    assert breakout.calls == 0
+    assert mean_rev.calls == 1
