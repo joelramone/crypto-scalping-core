@@ -1,31 +1,22 @@
 from app.utils.strategy_performance_tracker import StrategyPerformanceTracker
 
 
-def test_tracker_accumulates_strategy_metrics():
+def test_tracker_accumulates_strategy_and_regime_metrics():
     tracker = StrategyPerformanceTracker()
 
-    tracker.record_trade("RSI", 10.0)
-    tracker.record_trade("RSI", -5.0)
-    tracker.record_trade("Breakout", -2.0)
+    tracker.record_trade("RSI", 10.0, regime="RANGING")
+    tracker.record_trade("RSI", -5.0, regime="LOW_ACTIVITY")
+    tracker.record_trade("Breakout", -2.0, regime="TRENDING")
 
     exported = tracker.export()
 
-    assert exported["RSI"] == {
-        "trades_count": 2,
-        "wins": 1,
-        "losses": 1,
-        "gross_profit": 10.0,
-        "gross_loss": 5.0,
-        "net_profit": 5.0,
-    }
-    assert exported["Breakout"] == {
-        "trades_count": 1,
-        "wins": 0,
-        "losses": 1,
-        "gross_profit": 0.0,
-        "gross_loss": 2.0,
-        "net_profit": -2.0,
-    }
+    assert exported["by_strategy"]["RSI"]["trades_count"] == 2
+    assert exported["by_strategy"]["RSI"]["wins"] == 1
+    assert exported["by_strategy"]["RSI"]["expectancy"] == 2.5
+
+    assert exported["by_regime"]["RANGING"]["net_profit"] == 10.0
+    assert exported["by_regime"]["LOW_ACTIVITY"]["net_profit"] == -5.0
+    assert exported["by_regime"]["TRENDING"]["net_profit"] == -2.0
 
 
 def test_tracker_computed_metrics_helpers():

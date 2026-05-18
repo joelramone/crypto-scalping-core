@@ -1,26 +1,68 @@
 from __future__ import annotations
 
+from app.agents.regime_agent import RegimeAgent
+
 
 class MultiStrategyEngine:
-    """Legacy compatibility wrapper now running in single-strategy mode."""
+    HIGH_VOLATILITY = RegimeAgent.HIGH_VOLATILITY
 
-    HIGH_VOLATILITY = "HIGH_VOLATILITY"
-
-    def __init__(self, strategy) -> None:
-        self.strategy = strategy
+    def __init__(self, breakout_strategy, mean_reversion_strategy, regime_agent: RegimeAgent | None = None) -> None:
+        self.breakout_strategy = breakout_strategy
+        self.mean_reversion_strategy = mean_reversion_strategy
+        self.regime_agent = regime_agent or RegimeAgent()
+        self._last_signal_context: dict[str, float | str] | None = None
+        self._trade_log: list[dict[str, float | str]] = []
 
     def generate_signal(self, market_data):
-        return self.strategy.generate_signal(market_data)
+        regime = self.regime_agent.classify(market_data)
+        if regime is None:
+            self._last_signal_context = None
+            return None
+
+        atr_values = market_data.get("atr") or []
+        if len(atr_values) >= 20:
+            current_atr = float(atr_values[-1])
+            avg_atr = sum(float(v) for v in atr_values[-20:]) / 20
+            if avg_atr > 0 and (current_atr / avg_atr) <= 0.55:
+                self._last_signal_context = {
+                    "strategy_name": "NO_TRADE",
+                    "regime_detected": regime,
+                    "no_trade": "EXTREMELY_LOW_VOLATILITY",
+                }
+                return None
+
+        selected_strategy = None
+        if regime == RegimeAgent.TRENDING:
+            selected_strategy = self.breakout_strategy
+        elif regime in {RegimeAgent.RANGING, RegimeAgent.LOW_ACTIVITY, RegimeAgent.HIGH_VOLATILITY}:
+            selected_strategy = self.mean_reversion_strategy
+
+        if selected_strategy is None:
+            self._last_signal_context = None
+            return None
+
+        signal = selected_strategy.generate_signal(market_data, regime=regime)
+        if signal is None:
+            self._last_signal_context = {
+                "strategy_name": getattr(selected_strategy, "name", selected_strategy.__class__.__name__),
+                "regime_detected": regime,
+            }
+            return None
+
+        self._last_signal_context = {
+            "strategy_name": getattr(selected_strategy, "name", selected_strategy.__class__.__name__),
+            "regime_detected": regime,
+        }
+        return signal
 
     def consume_last_signal_context(self):
-        consume = getattr(self.strategy, "consume_last_signal_context", None)
-        return consume() if callable(consume) else None
+        context = self._last_signal_context
+        self._last_signal_context = None
+        return context
 
     def record_trade_outcome(self, payload):
-        record = getattr(self.strategy, "record_trade_outcome", None)
-        if callable(record):
-            record(payload)
+        self._trade_log.append(payload)
 
     @property
     def trade_log(self):
-        return list(getattr(self.strategy, "trade_log", []))
+        return list(self._trade_log)

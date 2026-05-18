@@ -16,9 +16,18 @@ class StrategyStats:
 @dataclass
 class StrategyPerformanceTracker:
     _stats_by_strategy: dict[str, StrategyStats] = field(default_factory=dict)
+    _stats_by_regime: dict[str, StrategyStats] = field(default_factory=dict)
 
-    def record_trade(self, strategy_name: str, pnl: float) -> None:
-        stats = self._stats_by_strategy.setdefault(strategy_name, StrategyStats())
+    def record_trade(self, strategy_name: str, pnl: float, regime: str | None = None) -> None:
+        strategy_stats = self._stats_by_strategy.setdefault(strategy_name, StrategyStats())
+        self._accumulate_stats(strategy_stats, pnl)
+
+        if regime:
+            regime_stats = self._stats_by_regime.setdefault(regime, StrategyStats())
+            self._accumulate_stats(regime_stats, pnl)
+
+    @staticmethod
+    def _accumulate_stats(stats: StrategyStats, pnl: float) -> None:
         stats.trades_count += 1
         stats.net_profit += pnl
 
@@ -29,17 +38,23 @@ class StrategyPerformanceTracker:
             stats.losses += 1
             stats.gross_loss += abs(pnl)
 
-    def export(self) -> dict[str, dict[str, float]]:
+    def export(self) -> dict[str, dict[str, dict[str, float]]]:
         return {
-            strategy_name: {
-                "trades_count": stats.trades_count,
-                "wins": stats.wins,
-                "losses": stats.losses,
-                "gross_profit": stats.gross_profit,
-                "gross_loss": stats.gross_loss,
-                "net_profit": stats.net_profit,
-            }
-            for strategy_name, stats in self._stats_by_strategy.items()
+            "by_strategy": {name: self._serialize_stats(stats) for name, stats in self._stats_by_strategy.items()},
+            "by_regime": {name: self._serialize_stats(stats) for name, stats in self._stats_by_regime.items()},
+        }
+
+    @staticmethod
+    def _serialize_stats(stats: StrategyStats) -> dict[str, float]:
+        return {
+            "trades_count": stats.trades_count,
+            "wins": stats.wins,
+            "losses": stats.losses,
+            "gross_profit": stats.gross_profit,
+            "gross_loss": stats.gross_loss,
+            "net_profit": stats.net_profit,
+            "win_rate": StrategyPerformanceTracker.compute_win_rate({"trades_count": stats.trades_count, "wins": stats.wins}),
+            "expectancy": StrategyPerformanceTracker.compute_expectancy({"trades_count": stats.trades_count, "net_profit": stats.net_profit}),
         }
 
     @staticmethod
