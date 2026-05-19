@@ -5,6 +5,7 @@ from app.agents.volatility_regime_detector import (
     RegimeScoreCalculator,
     VolatilityMetrics,
 )
+from app.utils.logger import get_logger
 
 
 class HighVolEngine:
@@ -23,6 +24,7 @@ class HighVolEngine:
         self.classifier = classifier or RegimeClassifier(threshold=0.50, min_active_features=2, confirmation_bars=1, min_volume_expansion_ratio=1.0)
         self._last_signal_context: dict[str, float | str] | None = None
         self._trade_log: list[dict[str, float | str]] = []
+        self._logger = get_logger(__name__)
 
     def generate_signal(self, market_data: dict[str, list[float]]):
         close = market_data.get("close") or []
@@ -49,7 +51,21 @@ class HighVolEngine:
             "regime_detected": regime,
             "regime_score": score.value,
             "atr": snapshot.atr,
+            "signal_quality_score": float(signal.get("signal_quality_score", 0.0)),
+            "score_components": str(signal.get("score_components", {})),
         }
+        self._logger.info(
+            "signal_quality_evaluated",
+            extra={
+                "event_name": "signal_quality_evaluated",
+                "parameters": {
+                    "strategy_name": self._last_signal_context["strategy_name"],
+                    "regime": regime,
+                    "total_score": signal.get("signal_quality_score", 0),
+                    "score_components": signal.get("score_components", {}),
+                },
+            },
+        )
         return signal
 
     def consume_last_signal_context(self) -> dict[str, float | str] | None:

@@ -7,8 +7,6 @@ class BreakoutTrendStrategy(BaseStrategy):
     name = "BreakoutTrendStrategy"
 
     def generate_signal(self, data, regime=None):
-        _ = regime
-
         close = data.get("close") or []
         high = data.get("high") or []
         low = data.get("low") or []
@@ -55,7 +53,22 @@ class BreakoutTrendStrategy(BaseStrategy):
             and self._is_bearish_exhaustion_candle(open_prices, high, low, close, -2)
         ):
             entry = float(close[-1])
-            return self._build_signal(side="LONG", entry=entry, atr_value=atr_value)
+            score_components = self._build_score_components(
+                side="LONG",
+                rsi_value=long_rsi,
+                open_prices=open_prices,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                atr=atr,
+                atr_value=atr_value,
+                ema_value=ema_value,
+                regime=regime,
+            )
+            signal_quality_score = sum(score_components.values())
+            if signal_quality_score >= int(getattr(self.config, "signal_score_threshold", 6)):
+                return self._build_signal(side="LONG", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=regime)
 
         return self._maybe_short(data, ema_value, atr_value)
 
@@ -79,9 +92,48 @@ class BreakoutTrendStrategy(BaseStrategy):
             and self._is_bullish_exhaustion_candle(open_prices, high, low, close, -2)
         ):
             entry = float(close[-1])
-            return self._build_signal(side="SHORT", entry=entry, atr_value=atr_value)
+            score_components = self._build_score_components(
+                side="SHORT",
+                rsi_value=short_rsi,
+                open_prices=open_prices,
+                high=high,
+                low=low,
+                close=close,
+                volume=data["volume"],
+                atr=data["atr"],
+                atr_value=atr_value,
+                ema_value=ema_value,
+                regime=None,
+            )
+            signal_quality_score = sum(score_components.values())
+            if signal_quality_score >= int(getattr(self.config, "signal_score_threshold", 6)):
+                return self._build_signal(side="SHORT", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=None)
 
         return None
+
+    def _build_score_components(self, side, rsi_value, open_prices, high, low, close, volume, atr, atr_value, ema_value, regime):
+        components = {
+            "rsi_extreme_confirmation": 0,
+            "strong_rejection_candle": 0,
+            "volume_spike": 0,
+            "atr_above_threshold": 0,
+            "distance_from_ema": 0,
+            "trend_alignment": 0,
+        }
+        components["rsi_extreme_confirmation"] = 3 if (side == "LONG" and rsi_value < float(getattr(self.config, "rsi_oversold", 20.0))) or (side == "SHORT" and rsi_value > float(getattr(self.config, "rsi_overbought", 80.0))) else 0
+        is_rejection = self._is_bearish_exhaustion_candle(open_prices, high, low, close, -2) if side == "LONG" else self._is_bullish_exhaustion_candle(open_prices, high, low, close, -2)
+        if is_rejection:
+            components["strong_rejection_candle"] = 2
+        if self._passes_volume_spike_filter(volume):
+            components["volume_spike"] = 1
+        if self._passes_volatility_filter(atr):
+            components["atr_above_threshold"] = 1
+        extension = atr_value * float(getattr(self.config, "extension_atr_multiplier", 0.2))
+        if abs(float(close[-2]) - ema_value) >= extension:
+            components["distance_from_ema"] = 1
+        if regime == "TRENDING":
+            components["trend_alignment"] = 1
+        return components
 
     def _resolve_rsi(self, data, side: str) -> float | None:
         series_key = "rsi_7"
@@ -189,7 +241,7 @@ class BreakoutTrendStrategy(BaseStrategy):
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
-    def _build_signal(self, side: str, entry: float, atr_value: float) -> dict[str, float | str | bool]:
+    def _build_signal(self, side: str, entry: float, atr_value: float, signal_quality_score: int, score_components: dict[str, int], regime: str | None) -> dict[str, float | str | bool | int | dict[str, int] | None]:
         sl_distance = atr_value * float(self.config.atr_sl_multiplier)
         risk_per_trade = sl_distance
         min_tp_distance = risk_per_trade * float(getattr(self.config, "min_take_profit_r", 1.5))
@@ -209,6 +261,10 @@ class BreakoutTrendStrategy(BaseStrategy):
             "sl": sl,
             "tp": tp,
             "risk": risk_per_trade,
+            "strategy_name": self.name,
+            "signal_quality_score": signal_quality_score,
+            "score_components": score_components,
+            "regime": regime,
             "trailing_stop_enabled": bool(getattr(self.config, "trailing_stop_enabled", False)),
             "trailing_stop_atr_multiplier": float(getattr(self.config, "trailing_stop_atr_multiplier", 1.0)),
         }
