@@ -17,14 +17,19 @@ class StrategyStats:
 class StrategyPerformanceTracker:
     _stats_by_strategy: dict[str, StrategyStats] = field(default_factory=dict)
     _stats_by_regime: dict[str, StrategyStats] = field(default_factory=dict)
+    _stats_by_score: dict[str, StrategyStats] = field(default_factory=dict)
 
-    def record_trade(self, strategy_name: str, pnl: float, regime: str | None = None) -> None:
+    def record_trade(self, strategy_name: str, pnl: float, regime: str | None = None, signal_quality_score: int | None = None) -> None:
         strategy_stats = self._stats_by_strategy.setdefault(strategy_name, StrategyStats())
         self._accumulate_stats(strategy_stats, pnl)
 
         if regime:
             regime_stats = self._stats_by_regime.setdefault(regime, StrategyStats())
             self._accumulate_stats(regime_stats, pnl)
+        if signal_quality_score is not None:
+            score_key = str(int(signal_quality_score))
+            score_stats = self._stats_by_score.setdefault(score_key, StrategyStats())
+            self._accumulate_stats(score_stats, pnl)
 
     @staticmethod
     def _accumulate_stats(stats: StrategyStats, pnl: float) -> None:
@@ -42,6 +47,7 @@ class StrategyPerformanceTracker:
         return {
             "by_strategy": {name: self._serialize_stats(stats) for name, stats in self._stats_by_strategy.items()},
             "by_regime": {name: self._serialize_stats(stats) for name, stats in self._stats_by_regime.items()},
+            "by_signal_quality_score": {name: self._serialize_stats(stats) for name, stats in self._stats_by_score.items()},
         }
 
     @staticmethod

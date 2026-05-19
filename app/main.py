@@ -57,6 +57,10 @@ class Position:
     opened_tick: int
     regime_score: float
     atr: float
+    strategy_name: str
+    regime_detected: str
+    signal_quality_score: int
+    score_components: str
     trailing_stop_enabled: bool
     trailing_stop_atr_multiplier: float
 
@@ -117,6 +121,20 @@ def _finalize_backtest_metrics(
     gross_loss = abs(sum(value for value in r_multiples if value < 0))
     max_drawdown = _compute_max_drawdown(equity_curve)
 
+    score_buckets: dict[str, list[float]] = {}
+    for log in trade_logs:
+        score_key = str(int(float(log.get("signal_quality_score", 0))))
+        score_buckets.setdefault(score_key, []).append(float(log.get("r_multiple", 0.0)))
+    metrics_by_score = {}
+    for score, values in score_buckets.items():
+        wins_by_score = sum(1 for v in values if v > 0)
+        metrics_by_score[score] = {
+            "trades": len(values),
+            "pnl": sum(values),
+            "expectancy": (sum(values) / len(values)) if values else 0.0,
+            "winrate": (wins_by_score / len(values)) if values else 0.0,
+        }
+
     return {
         "trades": len(r_multiples),
         "wins": wins,
@@ -127,6 +145,7 @@ def _finalize_backtest_metrics(
         "max_drawdown": max_drawdown,
         "r_distribution": r_multiples,
         "trade_logs": trade_logs,
+        "metrics_by_signal_quality_score": metrics_by_score,
     }
 
 
@@ -373,6 +392,10 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                 r_multiples.append(r_multiple)
                 trade_logs.append(
                     {
+                        "strategy_name": active.strategy_name,
+                        "regime": active.regime_detected,
+                        "signal_quality_score": active.signal_quality_score,
+                        "score_components": active.score_components,
                         "regime_score": active.regime_score,
                         "atr": active.atr,
                         "entry_price": active.entry,
@@ -424,6 +447,10 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                 opened_tick=tick,
                 regime_score=float(context.get("regime_score", 0.0)),
                 atr=float(context.get("atr", atr)),
+                strategy_name=str(context.get("strategy_name", "UNKNOWN")),
+                regime_detected=str(context.get("regime_detected", "UNKNOWN")),
+                signal_quality_score=int(float(signal.get("signal_quality_score", context.get("signal_quality_score", 0)))),
+                score_components=str(signal.get("score_components", context.get("score_components", {}))),
                 trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
                 trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
             )

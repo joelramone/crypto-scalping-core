@@ -26,8 +26,6 @@ class MeanReversionAgent:
         self.config = config or MeanReversionConfig()
 
     def generate_signal(self, data: dict[str, list[float]], regime: str | None = None):
-        _ = regime
-
         close = data.get("close") or []
         open_prices = data.get("open") or []
         high = data.get("high") or []
@@ -61,21 +59,43 @@ class MeanReversionAgent:
 
         extension = atr_value * self.config.extension_atr_multiplier
 
-        if (
-            long_rsi < 20.0
-            and float(close[-2]) < (ema_value - extension)
-            and self._is_bearish_exhaustion_candle(open_prices, high, low, close, -2)
-            and self._is_bullish_confirmation(open_prices, close)
-        ):
-            return self._build_signal(side="LONG", entry=float(close[-1]), atr_value=atr_value)
+        min_score_threshold = int(getattr(self.config, "signal_score_threshold", 6))
 
-        if (
-            short_rsi > 80.0
-            and float(close[-2]) > (ema_value + extension)
-            and self._is_bullish_exhaustion_candle(open_prices, high, low, close, -2)
-            and self._is_bearish_confirmation(open_prices, close)
-        ):
-            return self._build_signal(side="SHORT", entry=float(close[-1]), atr_value=atr_value)
+        if long_rsi < 20.0 and float(close[-2]) < (ema_value - extension):
+            long_components = self._score_components(
+                side="LONG",
+                rsi_value=long_rsi,
+                open_prices=open_prices,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                atr=atr,
+                atr_value=atr_value,
+                ema_value=ema_value,
+                regime=regime,
+            )
+            long_score = sum(long_components.values())
+            if long_score >= min_score_threshold:
+                return self._build_signal(side="LONG", entry=float(close[-1]), atr_value=atr_value, signal_quality_score=long_score, score_components=long_components, regime=regime)
+
+        if short_rsi > 80.0 and float(close[-2]) > (ema_value + extension):
+            short_components = self._score_components(
+                side="SHORT",
+                rsi_value=short_rsi,
+                open_prices=open_prices,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                atr=atr,
+                atr_value=atr_value,
+                ema_value=ema_value,
+                regime=regime,
+            )
+            short_score = sum(short_components.values())
+            if short_score >= min_score_threshold:
+                return self._build_signal(side="SHORT", entry=float(close[-1]), atr_value=atr_value, signal_quality_score=short_score, score_components=short_components, regime=regime)
 
         return None
 
@@ -184,7 +204,44 @@ class MeanReversionAgent:
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
-    def _build_signal(self, side: str, entry: float, atr_value: float) -> dict[str, float | str | bool]:
+    def _score_components(
+        self,
+        side: str,
+        rsi_value: float,
+        open_prices: list[float],
+        high: list[float],
+        low: list[float],
+        close: list[float],
+        volume: list[float],
+        atr: list[float],
+        atr_value: float,
+        ema_value: float,
+        regime: str | None,
+    ) -> dict[str, int]:
+        components = {
+            "rsi_extreme_confirmation": 0,
+            "strong_rejection_candle": 0,
+            "volume_spike": 0,
+            "atr_above_threshold": 0,
+            "distance_from_ema": 0,
+            "trend_alignment": 0,
+        }
+        components["rsi_extreme_confirmation"] = 3 if (side == "LONG" and rsi_value < 20.0) or (side == "SHORT" and rsi_value > 80.0) else 0
+        is_rejection = self._is_bearish_exhaustion_candle(open_prices, high, low, close, -2) if side == "LONG" else self._is_bullish_exhaustion_candle(open_prices, high, low, close, -2)
+        if is_rejection:
+            components["strong_rejection_candle"] = 2
+        if self._passes_volume_spike_filter(volume):
+            components["volume_spike"] = 1
+        if self._passes_volatility_filter(atr, high, low):
+            components["atr_above_threshold"] = 1
+        extension = atr_value * self.config.extension_atr_multiplier
+        if abs(float(close[-2]) - ema_value) >= extension:
+            components["distance_from_ema"] = 1
+        if regime in {"RANGING", "HIGH_VOLATILITY", None}:
+            components["trend_alignment"] = 1
+        return components
+
+    def _build_signal(self, side: str, entry: float, atr_value: float, signal_quality_score: int, score_components: dict[str, int], regime: str | None) -> dict[str, float | str | bool | int | dict[str, int] | None]:
         sl_distance = atr_value * self.config.atr_sl_multiplier
         min_tp_distance = sl_distance * self.config.min_take_profit_r
         atr_tp_distance = atr_value * self.config.atr_tp_multiplier
@@ -204,4 +261,7 @@ class MeanReversionAgent:
             "tp": tp,
             "risk": sl_distance,
             "strategy_name": self.name,
+            "signal_quality_score": signal_quality_score,
+            "score_components": score_components,
+            "regime": regime,
         }
