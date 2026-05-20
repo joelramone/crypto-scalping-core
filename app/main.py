@@ -33,6 +33,24 @@ DEFAULT_MAX_TRADE_TICKS = 500
 DEFAULT_MAX_SIMULATION_MS = 1500
 DEFAULT_MONTE_CARLO_MAX_SECONDS = 300
 
+DYNAMIC_RISK_MULTIPLIERS = {
+    5: float(os.getenv("RISK_MULTIPLIER_SCORE_5", "1.5")),
+    4: float(os.getenv("RISK_MULTIPLIER_SCORE_4", "1.0")),
+    3: float(os.getenv("RISK_MULTIPLIER_SCORE_3", "0.5")),
+}
+MIN_SIGNAL_QUALITY_SCORE = int(os.getenv("MIN_SIGNAL_QUALITY_SCORE", "3"))
+MIN_REGIME_SCORE_FOR_ENTRY = float(os.getenv("MIN_REGIME_SCORE_FOR_ENTRY", "0.55"))
+NO_TRADE_MIN_ATR_RATIO = float(os.getenv("NO_TRADE_MIN_ATR_RATIO", "0.65"))
+NO_TRADE_MIN_VOLUME_RATIO = float(os.getenv("NO_TRADE_MIN_VOLUME_RATIO", "0.75"))
+NO_TRADE_MAX_SPREAD_TO_ATR = float(os.getenv("NO_TRADE_MAX_SPREAD_TO_ATR", "0.85"))
+NO_TRADE_MAX_COMPRESSION_RATIO = float(os.getenv("NO_TRADE_MAX_COMPRESSION_RATIO", "0.75"))
+ROLLING_DEGRADATION_WINDOW = int(os.getenv("ROLLING_DEGRADATION_WINDOW", "25"))
+ROLLING_MIN_EXPECTANCY = float(os.getenv("ROLLING_MIN_EXPECTANCY", "-0.05"))
+ROLLING_MIN_PROFIT_FACTOR = float(os.getenv("ROLLING_MIN_PROFIT_FACTOR", "0.9"))
+ROLLING_MIN_WINRATE = float(os.getenv("ROLLING_MIN_WINRATE", "0.40"))
+DEGRADED_RISK_MULTIPLIER = float(os.getenv("DEGRADED_RISK_MULTIPLIER", "0.6"))
+DEGRADATION_DISABLE_BARS = int(os.getenv("DEGRADATION_DISABLE_BARS", "40"))
+
 
 def _load_breakout_strategy_config_class():
     config_path = Path(__file__).resolve().parent / "config" / "breakout_config.py"
@@ -63,6 +81,7 @@ class Position:
     score_components: str
     trailing_stop_enabled: bool
     trailing_stop_atr_multiplier: float
+    risk_tier: str = "1.0"
 
 
 logger = get_logger(__name__)
@@ -109,6 +128,57 @@ def _compute_max_drawdown(equity_curve: list[float]) -> float:
     return max_dd
 
 
+def _score_to_int(score: float | int | None) -> int:
+    if score is None:
+        return 0
+    return int(float(score))
+
+
+def _resolve_risk_multiplier(score: float | int | None, regime_score: float, risk_degraded: bool) -> tuple[float, str]:
+    score_int = _score_to_int(score)
+    if score_int < MIN_SIGNAL_QUALITY_SCORE:
+        return 0.0, "SCORE_BELOW_THRESHOLD"
+    risk_multiplier = DYNAMIC_RISK_MULTIPLIERS.get(score_int, 0.0)
+    if risk_multiplier <= 0.0:
+        return 0.0, "SCORE_NOT_ALLOCATED"
+    if regime_score < MIN_REGIME_SCORE_FOR_ENTRY:
+        return 0.0, "LOW_REGIME_CONFIDENCE"
+    if risk_degraded:
+        return risk_multiplier * DEGRADED_RISK_MULTIPLIER, "DEGRADED_RISK"
+    return risk_multiplier, "NORMAL_RISK"
+
+
+def _is_no_trade_zone(atr_series: list[float], volume_series: list[float], high_series: list[float], low_series: list[float]) -> tuple[bool, str]:
+    if len(atr_series) < 20 or len(volume_series) < 20 or len(high_series) < 20 or len(low_series) < 20:
+        return False, "INSUFFICIENT_CONTEXT"
+    current_atr = float(atr_series[-1])
+    avg_atr = sum(float(v) for v in atr_series[-20:]) / 20
+    if avg_atr <= 0.0:
+        return True, "ATR_INVALID"
+    atr_ratio = current_atr / avg_atr
+    if atr_ratio < NO_TRADE_MIN_ATR_RATIO:
+        return True, "ATR_TOO_LOW"
+
+    current_volume = float(volume_series[-1])
+    avg_volume = sum(float(v) for v in volume_series[-20:]) / 20
+    volume_ratio = (current_volume / avg_volume) if avg_volume > 0 else 0.0
+    if volume_ratio < NO_TRADE_MIN_VOLUME_RATIO:
+        return True, "VOLUME_TOO_WEAK"
+
+    current_spread = float(high_series[-1]) - float(low_series[-1])
+    spread_to_atr = current_spread / current_atr if current_atr > 0 else float("inf")
+    if spread_to_atr > NO_TRADE_MAX_SPREAD_TO_ATR:
+        return True, "UNFAVORABLE_SPREAD"
+
+    ranges = [float(h) - float(l) for h, l in zip(high_series[-20:], low_series[-20:])]
+    avg_range = sum(ranges) / len(ranges)
+    compression_ratio = current_spread / avg_range if avg_range > 0 else 0.0
+    if compression_ratio < NO_TRADE_MAX_COMPRESSION_RATIO:
+        return True, "VOLATILITY_COMPRESSED"
+
+    return False, "OK"
+
+
 def _finalize_backtest_metrics(
     r_multiples: list[float],
     trade_logs: list[dict[str, float | int | str]],
@@ -126,6 +196,12 @@ def _finalize_backtest_metrics(
         score_key = str(int(float(log.get("signal_quality_score", 0))))
         score_buckets.setdefault(score_key, []).append(float(log.get("r_multiple", 0.0)))
     metrics_by_score = {}
+    metrics_by_risk_tier: dict[str, dict[str, float]] = {}
+    risk_buckets: dict[str, list[float]] = {}
+    for log in trade_logs:
+        risk_key = str(log.get("risk_tier", "0.0"))
+        risk_buckets.setdefault(risk_key, []).append(float(log.get("r_multiple", 0.0)))
+
     for score, values in score_buckets.items():
         wins_by_score = sum(1 for v in values if v > 0)
         metrics_by_score[score] = {
@@ -134,6 +210,24 @@ def _finalize_backtest_metrics(
             "expectancy": (sum(values) / len(values)) if values else 0.0,
             "winrate": (wins_by_score / len(values)) if values else 0.0,
         }
+    for risk_tier, values in risk_buckets.items():
+        tier_wins = sum(1 for v in values if v > 0)
+        metrics_by_risk_tier[risk_tier] = {"trades": len(values), "pnl": sum(values), "expectancy": (sum(values)/len(values)) if values else 0.0, "winrate": (tier_wins/len(values)) if values else 0.0}
+
+    regime_buckets: dict[str, list[float]] = {}
+    for log in trade_logs:
+        regime_key = str(log.get("regime", "UNKNOWN"))
+        regime_buckets.setdefault(regime_key, []).append(float(log.get("r_multiple", 0.0)))
+    regime_expectancy = {key: (sum(vals) / len(vals)) if vals else 0.0 for key, vals in regime_buckets.items()}
+    drawdown_by_strategy: dict[str, float] = {}
+    peaks: dict[str, float] = {}
+    cumulative: dict[str, float] = {}
+    for log in trade_logs:
+        name = str(log.get("strategy_name", "UNKNOWN"))
+        cumulative[name] = cumulative.get(name, 0.0) + float(log.get("r_multiple", 0.0))
+        peaks[name] = max(peaks.get(name, cumulative[name]), cumulative[name])
+        dd = peaks[name] - cumulative[name]
+        drawdown_by_strategy[name] = max(drawdown_by_strategy.get(name, 0.0), dd)
 
     return {
         "trades": len(r_multiples),
@@ -146,6 +240,9 @@ def _finalize_backtest_metrics(
         "r_distribution": r_multiples,
         "trade_logs": trade_logs,
         "metrics_by_signal_quality_score": metrics_by_score,
+        "metrics_by_risk_tier": metrics_by_risk_tier,
+        "expectancy_by_regime": regime_expectancy,
+        "drawdown_by_strategy": drawdown_by_strategy,
     }
 
 
@@ -362,7 +459,8 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
             "atr": atr_series,
         }
 
-        signal = strategy.generate_signal(market_data)
+        no_trade, no_trade_reason = _is_no_trade_zone(atr_series, volume, high, low)
+        signal = None if no_trade else strategy.generate_signal(market_data)
 
         if active:
             if active.trailing_stop_enabled:
@@ -406,6 +504,7 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                         "r_multiple": r_multiple,
                         "duration_ticks": tick - active.opened_tick,
                         "exit_reason": exit_reason,
+                        "risk_tier": active.risk_tier,
                     }
                 )
                 strategy.record_trade_outcome(trade_logs[-1])
@@ -415,6 +514,11 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
 
         if active is None and signal:
             context = strategy.consume_last_signal_context() or {}
+            regime_score = float(context.get("regime_score", 0.0))
+            risk_multiplier, risk_tier = _resolve_risk_multiplier(signal.get("signal_quality_score"), regime_score, False)
+            if risk_multiplier <= 0.0:
+                equity_curve.append(cumulative_r)
+                continue
             entry_price = float(signal["entry"])
             stop_price = float(signal["sl"])
             target_price = float(signal["tp"])
@@ -442,16 +546,17 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                 sl=stop_price,
                 tp=target_price,
                 initial_sl=stop_price,
-                risk_per_trade=risk_per_trade,
+                risk_per_trade=risk_per_trade * risk_multiplier,
                 reward_per_trade=reward_per_trade,
                 opened_tick=tick,
-                regime_score=float(context.get("regime_score", 0.0)),
+                regime_score=regime_score,
                 atr=float(context.get("atr", atr)),
                 strategy_name=str(context.get("strategy_name", "UNKNOWN")),
                 regime_detected=str(context.get("regime_detected", "UNKNOWN")),
                 signal_quality_score=int(float(signal.get("signal_quality_score", context.get("signal_quality_score", 0)))),
                 score_components=str(signal.get("score_components", context.get("score_components", {}))),
                 trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
+                risk_tier=risk_tier,
                 trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
             )
 
@@ -546,6 +651,8 @@ def run_single_backtest(
                     )
                     r_multiples.append(r_multiple)
                     trade_payload = {
+                        "strategy_name": "BREAKOUT",
+                        "regime": "HIGH_VOLATILITY",
                         "regime_score": active.regime_score,
                         "atr": active.atr,
                         "entry_price": active.entry,
@@ -601,6 +708,7 @@ def run_single_backtest(
                         "r_multiple": r_multiple,
                         "duration_ticks": i - active.opened_tick,
                         "exit_reason": exit_reason,
+                        "risk_tier": active.risk_tier,
                     }
                     trade_logs.append(trade_payload)
                     strategy.record_trade_outcome(trade_payload)
@@ -623,6 +731,12 @@ def run_single_backtest(
 
                 if signal_side is not None:
                     signal = strategy.breakout_strategy._build_signal(side=signal_side, entry=float(price), atr_value=float(current_atr))
+                    signal_score = int(float(signal.get("signal_quality_score", 4)))
+                    regime_score = float(score_values[i]) if not np.isnan(score_values[i]) else 0.0
+                    risk_multiplier, risk_tier = _resolve_risk_multiplier(signal_score, regime_score, False)
+                    if risk_multiplier <= 0.0:
+                        equity_curve[i] = cumulative_r
+                        continue
                     entry_price = float(signal["entry"])
                     stop_price = float(signal["sl"])
                     target_price = float(signal["tp"])
@@ -634,12 +748,13 @@ def run_single_backtest(
                         sl=stop_price,
                         tp=target_price,
                         initial_sl=stop_price,
-                        risk_per_trade=risk_per_trade,
+                        risk_per_trade=risk_per_trade * risk_multiplier,
                         reward_per_trade=reward_per_trade,
                         opened_tick=i,
-                        regime_score=float(score_values[i]) if not np.isnan(score_values[i]) else 0.0,
+                        regime_score=regime_score,
                         atr=float(current_atr),
                         trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
+                        risk_tier=risk_tier,
                         trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
                     )
 
@@ -654,6 +769,8 @@ def run_single_backtest(
                 stop_price=active.initial_sl,
             )
             trade_payload = {
+                "strategy_name": "BREAKOUT",
+                "regime": "HIGH_VOLATILITY",
                 "regime_score": active.regime_score,
                 "atr": active.atr,
                 "entry_price": active.entry,
@@ -664,6 +781,7 @@ def run_single_backtest(
                 "r_multiple": r_multiple,
                 "duration_ticks": max(0, n - 1 - active.opened_tick),
                 "exit_reason": "FORCE_CLOSE_END",
+                "risk_tier": active.risk_tier,
             }
             r_multiples.append(r_multiple)
             trade_logs.append(trade_payload)
