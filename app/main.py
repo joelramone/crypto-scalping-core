@@ -75,13 +75,21 @@ class Position:
     opened_tick: int
     regime_score: float
     atr: float
-    strategy_name: str
-    regime_detected: str
-    signal_quality_score: int
-    score_components: str
-    trailing_stop_enabled: bool
-    trailing_stop_atr_multiplier: float
+    strategy_name: str = "UNKNOWN"
+    regime_detected: str = "UNKNOWN"
+    signal_quality_score: int = 0
+    score_components: str = ""
+    trailing_stop_enabled: bool = False
+    trailing_stop_atr_multiplier: float = 1.0
     risk_tier: str = "1.0"
+    exit_profile_name: str = "default"
+    break_even_trigger_r: float = 1.0
+    trailing_activation_r: float = 0.0
+    mfe: float = 0.0
+    mae: float = 0.0
+    peak_tick: int = 0
+    break_even_stop_count: int = 0
+    trailing_stop_updates: int = 0
 
 
 logger = get_logger(__name__)
@@ -229,6 +237,11 @@ def _finalize_backtest_metrics(
         dd = peaks[name] - cumulative[name]
         drawdown_by_strategy[name] = max(drawdown_by_strategy.get(name, 0.0), dd)
 
+    capture_values = [float(log.get("mfe_captured_pct", 0.0)) for log in trade_logs if float(log.get("mfe", 0.0)) > 0.0]
+    break_even_hits = sum(int(log.get("break_even_stop_count", 0)) for log in trade_logs)
+    trailing_exits = sum(1 for log in trade_logs if str(log.get("exit_reason")) == "TRAILING_SL")
+    mae_values = [float(log.get("mae", 0.0)) for log in trade_logs]
+    time_to_peak = [float(log.get("time_to_peak_ticks", 0.0)) for log in trade_logs]
     return {
         "trades": len(r_multiples),
         "wins": wins,
@@ -243,7 +256,27 @@ def _finalize_backtest_metrics(
         "metrics_by_risk_tier": metrics_by_risk_tier,
         "expectancy_by_regime": regime_expectancy,
         "drawdown_by_strategy": drawdown_by_strategy,
+        "exit_efficiency": {
+            "avg_mfe_captured_pct": mean(capture_values) if capture_values else 0.0,
+            "avg_mae_r": mean(mae_values) if mae_values else 0.0,
+            "break_even_stop_frequency": (break_even_hits / len(trade_logs)) if trade_logs else 0.0,
+            "trailing_stop_exit_frequency": (trailing_exits / len(trade_logs)) if trade_logs else 0.0,
+            "avg_time_to_peak_ticks": mean(time_to_peak) if time_to_peak else 0.0,
+            "avg_realized_vs_max_unrealized_r": mean(capture_values) if capture_values else 0.0,
+        },
     }
+
+
+def _resolve_exit_profile(strategy_name: str, signal_quality_score: int, regime: str) -> dict[str, float | str]:
+    is_trending = regime in {"HIGH_VOLATILITY", "TRENDING"}
+    is_high_score = signal_quality_score >= 4
+    if "BREAKOUT" in strategy_name.upper():
+        if is_trending and is_high_score:
+            return {"name": "breakout_exit_profile", "tp_mult": 1.35, "trail_mult": 1.6, "be_trigger_r": 1.2, "trail_trigger_r": 0.8}
+        return {"name": "breakout_exit_profile", "tp_mult": 1.05, "trail_mult": 0.9, "be_trigger_r": 0.6, "trail_trigger_r": 0.2}
+    if is_trending and is_high_score:
+        return {"name": "mean_reversion_exit_profile", "tp_mult": 1.1, "trail_mult": 1.1, "be_trigger_r": 0.9, "trail_trigger_r": 0.5}
+    return {"name": "mean_reversion_exit_profile", "tp_mult": 0.9, "trail_mult": 0.8, "be_trigger_r": 0.45, "trail_trigger_r": 0.15}
 
 
 def _rolling_mean_np(values: np.ndarray, window: int) -> np.ndarray:
@@ -463,18 +496,34 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
         signal = None if no_trade else strategy.generate_signal(market_data)
 
         if active:
+            unrealized_r = compute_r_multiple(active.side, active.entry, price, active.initial_sl)
+            active.mfe = max(active.mfe, unrealized_r)
+            active.mae = min(active.mae, unrealized_r)
+            if unrealized_r > 0 and (active.peak_tick == 0 or unrealized_r >= active.mfe):
+                active.peak_tick = tick
+            if unrealized_r >= active.break_even_trigger_r:
+                if active.side == "LONG" and active.sl < active.entry:
+                    active.sl = active.entry
+                    active.break_even_stop_count += 1
+                elif active.side == "SHORT" and active.sl > active.entry:
+                    active.sl = active.entry
+                    active.break_even_stop_count += 1
             if active.trailing_stop_enabled:
-                trail_distance = atr * active.trailing_stop_atr_multiplier
-                if active.side == "LONG":
-                    active.sl = max(active.sl, price - trail_distance)
-                else:
-                    active.sl = min(active.sl, price + trail_distance)
+                if unrealized_r >= active.trailing_activation_r:
+                    trail_distance = atr * active.trailing_stop_atr_multiplier
+                    if active.side == "LONG":
+                        new_sl = max(active.sl, price - trail_distance)
+                    else:
+                        new_sl = min(active.sl, price + trail_distance)
+                    if new_sl != active.sl:
+                        active.trailing_stop_updates += 1
+                        active.sl = new_sl
 
             hit_sl = (active.side == "LONG" and price <= active.sl) or (active.side == "SHORT" and price >= active.sl)
             hit_tp = (active.side == "LONG" and price >= active.tp) or (active.side == "SHORT" and price <= active.tp)
 
             if hit_sl or hit_tp:
-                exit_reason = "TP" if hit_tp else "SL"
+                exit_reason = "TP" if hit_tp else ("TRAILING_SL" if active.trailing_stop_updates > 0 else "SL")
                 exit_price = active.tp if hit_tp else active.sl
                 r_multiple = compute_r_multiple(
                     side=active.side,
@@ -505,6 +554,13 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                         "duration_ticks": tick - active.opened_tick,
                         "exit_reason": exit_reason,
                         "risk_tier": active.risk_tier,
+                        "exit_profile": active.exit_profile_name,
+                        "mfe": active.mfe,
+                        "mae": active.mae,
+                        "mfe_captured_pct": (r_multiple / active.mfe * 100.0) if active.mfe > 0 else 0.0,
+                        "break_even_stop_count": active.break_even_stop_count,
+                        "trailing_stop_updates": active.trailing_stop_updates,
+                        "time_to_peak_ticks": max(0, active.peak_tick - active.opened_tick) if active.peak_tick else 0,
                     }
                 )
                 strategy.record_trade_outcome(trade_logs[-1])
@@ -525,6 +581,11 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
             side = str(signal["side"])
             risk_per_trade = abs(entry_price - stop_price)
             reward_per_trade = abs(target_price - entry_price)
+            strategy_name = str(context.get("strategy_name", "UNKNOWN"))
+            regime_name = str(context.get("regime_detected", "UNKNOWN"))
+            signal_score = int(float(signal.get("signal_quality_score", context.get("signal_quality_score", 0))))
+            profile = _resolve_exit_profile(strategy_name=strategy_name, signal_quality_score=signal_score, regime=regime_name)
+            target_price = entry_price + (target_price - entry_price) * float(profile["tp_mult"])
 
             if risk_per_trade <= 0:
                 raise ValueError("risk_per_trade must be greater than zero")
@@ -551,13 +612,16 @@ def _backtest_from_ohlcv_rows(strategy: HighVolEngine, rows: list[dict[str, floa
                 opened_tick=tick,
                 regime_score=regime_score,
                 atr=float(context.get("atr", atr)),
-                strategy_name=str(context.get("strategy_name", "UNKNOWN")),
-                regime_detected=str(context.get("regime_detected", "UNKNOWN")),
-                signal_quality_score=int(float(signal.get("signal_quality_score", context.get("signal_quality_score", 0)))),
+                strategy_name=strategy_name,
+                regime_detected=regime_name,
+                signal_quality_score=signal_score,
                 score_components=str(signal.get("score_components", context.get("score_components", {}))),
                 trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
                 risk_tier=risk_tier,
-                trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
+                trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)) * float(profile["trail_mult"]),
+                exit_profile_name=str(profile["name"]),
+                break_even_trigger_r=float(profile["be_trigger_r"]),
+                trailing_activation_r=float(profile["trail_trigger_r"]),
             )
 
         equity_curve.append(cumulative_r)
@@ -677,18 +741,27 @@ def run_single_backtest(
 
             if active is not None:
                 positions[i] = 1 if active.side == "LONG" else -1
+                unrealized_r = compute_r_multiple(active.side, active.entry, float(price), active.initial_sl)
+                active.mfe = max(active.mfe, unrealized_r)
+                active.mae = min(active.mae, unrealized_r)
+                if unrealized_r > 0 and (active.peak_tick == 0 or unrealized_r >= active.mfe):
+                    active.peak_tick = i
                 if active.trailing_stop_enabled:
-                    trail_distance = current_atr * active.trailing_stop_atr_multiplier
-                    if active.side == "LONG":
-                        active.sl = max(active.sl, price - trail_distance)
-                    else:
-                        active.sl = min(active.sl, price + trail_distance)
+                    if unrealized_r >= active.trailing_activation_r:
+                        trail_distance = current_atr * active.trailing_stop_atr_multiplier
+                        if active.side == "LONG":
+                            new_sl = max(active.sl, price - trail_distance)
+                        else:
+                            new_sl = min(active.sl, price + trail_distance)
+                        if new_sl != active.sl:
+                            active.trailing_stop_updates += 1
+                            active.sl = new_sl
 
                 hit_sl = (active.side == "LONG" and price <= active.sl) or (active.side == "SHORT" and price >= active.sl)
                 hit_tp = (active.side == "LONG" and price >= active.tp) or (active.side == "SHORT" and price <= active.tp)
                 max_tick_exit = (i - active.opened_tick) >= max_trade_ticks
                 if hit_sl or hit_tp or max_tick_exit:
-                    exit_reason = "TP" if hit_tp else ("SL" if hit_sl else "MAX_TICKS")
+                    exit_reason = "TP" if hit_tp else ("TRAILING_SL" if hit_sl and active.trailing_stop_updates > 0 else ("SL" if hit_sl else "MAX_TICKS"))
                     exit_price = active.tp if hit_tp else (active.sl if hit_sl else float(price))
                     r_multiple = compute_r_multiple(
                         side=active.side,
@@ -709,6 +782,13 @@ def run_single_backtest(
                         "duration_ticks": i - active.opened_tick,
                         "exit_reason": exit_reason,
                         "risk_tier": active.risk_tier,
+                        "exit_profile": active.exit_profile_name,
+                        "mfe": active.mfe,
+                        "mae": active.mae,
+                        "mfe_captured_pct": (r_multiple / active.mfe * 100.0) if active.mfe > 0 else 0.0,
+                        "break_even_stop_count": active.break_even_stop_count,
+                        "trailing_stop_updates": active.trailing_stop_updates,
+                        "time_to_peak_ticks": max(0, active.peak_tick - active.opened_tick) if active.peak_tick else 0,
                     }
                     trade_logs.append(trade_payload)
                     strategy.record_trade_outcome(trade_payload)
@@ -740,6 +820,8 @@ def run_single_backtest(
                     entry_price = float(signal["entry"])
                     stop_price = float(signal["sl"])
                     target_price = float(signal["tp"])
+                    profile = _resolve_exit_profile("BREAKOUT", signal_score, "HIGH_VOLATILITY")
+                    target_price = entry_price + (target_price - entry_price) * float(profile["tp_mult"])
                     risk_per_trade = abs(entry_price - stop_price)
                     reward_per_trade = abs(target_price - entry_price)
                     active = Position(
@@ -755,7 +837,10 @@ def run_single_backtest(
                         atr=float(current_atr),
                         trailing_stop_enabled=bool(signal.get("trailing_stop_enabled", False)),
                         risk_tier=risk_tier,
-                        trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)),
+                        trailing_stop_atr_multiplier=float(signal.get("trailing_stop_atr_multiplier", 1.0)) * float(profile["trail_mult"]),
+                        exit_profile_name=str(profile["name"]),
+                        break_even_trigger_r=float(profile["be_trigger_r"]),
+                        trailing_activation_r=float(profile["trail_trigger_r"]),
                     )
 
             equity_curve[i] = cumulative_r
