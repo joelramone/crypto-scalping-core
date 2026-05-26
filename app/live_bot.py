@@ -59,11 +59,19 @@ ENABLE_PARTIAL_TP = True
 PARTIAL_TP_TRIGGER_PCT = float(os.getenv("PARTIAL_TP_TRIGGER_PCT", "0.0025"))
 PARTIAL_TP_CLOSE_FRACTION = float(os.getenv("PARTIAL_TP_CLOSE_FRACTION", "0.7"))
 ENABLE_BREAK_EVEN_STOP = True
-BREAK_EVEN_TRIGGER_PCT = float(os.getenv("BREAK_EVEN_TRIGGER_PCT", "0.003"))
+BREAK_EVEN_TRIGGER_PCT = float(os.getenv("BREAK_EVEN_TRIGGER_PCT", "0.006"))
 ENABLE_TIME_EXIT = True
-MAX_TRADE_DURATION_MINUTES = int(os.getenv("MAX_TRADE_DURATION_MINUTES", "3"))
+MAX_TRADE_DURATION_MINUTES = int(os.getenv("MAX_TRADE_DURATION_MINUTES", "12"))
 ENABLE_TRAILING_STOP_AFTER_PARTIAL = True
 TRAILING_STOP_BUFFER_PCT = 0.003
+HIGH_QUALITY_SCORE_THRESHOLD = float(os.getenv("HIGH_QUALITY_SCORE_THRESHOLD", "1.8"))
+LOW_QUALITY_SCORE_THRESHOLD = float(os.getenv("LOW_QUALITY_SCORE_THRESHOLD", "1.2"))
+TIME_EXIT_HIGH_QUALITY_MULTIPLIER = float(os.getenv("TIME_EXIT_HIGH_QUALITY_MULTIPLIER", "1.5"))
+TIME_EXIT_LOW_QUALITY_MULTIPLIER = float(os.getenv("TIME_EXIT_LOW_QUALITY_MULTIPLIER", "0.7"))
+TIME_EXIT_TRENDING_MULTIPLIER = float(os.getenv("TIME_EXIT_TRENDING_MULTIPLIER", "1.3"))
+BREAK_EVEN_AFTER_FEE_MULTIPLIER = float(os.getenv("BREAK_EVEN_AFTER_FEE_MULTIPLIER", "2.5"))
+TRAILING_ACTIVATION_PNL_MULTIPLIER = float(os.getenv("TRAILING_ACTIVATION_PNL_MULTIPLIER", "2.0"))
+TP_HIGH_QUALITY_MULTIPLIER = float(os.getenv("TP_HIGH_QUALITY_MULTIPLIER", "1.5"))
 ALLOW_LOW_ACTIVITY = env_bool("ALLOW_LOW_ACTIVITY", False)
 
 RUNTIME_DIR = Path("runtime")
@@ -1104,7 +1112,11 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
     if entry_price <= 0:
         return None, "skipped_price_invalid"
     stop_price = entry_price * (1 - STOP_PCT) if is_long else entry_price * (1 + STOP_PCT)
-    take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT) if is_long else entry_price * (1 - TAKE_PROFIT_PCT)
+    take_profit_pct = TAKE_PROFIT_PCT
+    signal_quality_score = float(os.getenv("CURRENT_SIGNAL_QUALITY_SCORE", "1.0"))
+    if signal_quality_score >= HIGH_QUALITY_SCORE_THRESHOLD:
+        take_profit_pct *= TP_HIGH_QUALITY_MULTIPLIER
+    take_profit_price = entry_price * (1 + take_profit_pct) if is_long else entry_price * (1 - take_profit_pct)
     usdt_balance = usdt_before
     risk_per_trade_usdt = RISK_PER_TRADE_USDT
     stop_distance_abs = abs(entry_price - stop_price)
@@ -1181,6 +1193,7 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
         "estimated_exit_fee": estimated_exit_fee,
         "expected_move_usdt": expected_move_usdt,
         "estimated_total_fees": estimated_total_fees,
+        "signal_quality_score": signal_quality_score,
     }, ""
 
 
@@ -1232,6 +1245,8 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
             "max_favorable_excursion_usdt": 0.0,
             "max_adverse_excursion_usdt": 0.0,
             "exit_reason": None,
+            "signal_quality_score": float(plan.get("signal_quality_score", 1.0)),
+            "trend_aligned": os.getenv("CURRENT_SIGNAL_TREND_ALIGNED", "0") == "1",
         }, "", qty
 
     entry_order = call_with_time_sync(
@@ -1435,7 +1450,15 @@ def compute_break_even_stop_price(side: str, entry_price: float) -> float:
 
 
 def get_time_exit_limit_minutes(active_trade_state: Dict[str, Any]) -> int:
-    return MAX_TRADE_DURATION_MINUTES
+    base = float(MAX_TRADE_DURATION_MINUTES)
+    quality_score = float(active_trade_state.get("signal_quality_score", 1.0))
+    if quality_score >= HIGH_QUALITY_SCORE_THRESHOLD:
+        base *= TIME_EXIT_HIGH_QUALITY_MULTIPLIER
+    elif quality_score <= LOW_QUALITY_SCORE_THRESHOLD:
+        base *= TIME_EXIT_LOW_QUALITY_MULTIPLIER
+    if bool(active_trade_state.get("trend_aligned", False)):
+        base *= TIME_EXIT_TRENDING_MULTIPLIER
+    return max(3, int(round(base)))
 
 
 def log_trade_performance_metrics(active_trade_state: Dict[str, Any], duration_minutes: float, net_pnl_value: float) -> None:
@@ -1447,6 +1470,9 @@ def log_trade_performance_metrics(active_trade_state: Dict[str, Any], duration_m
     log_event(f"mfe_usdt={mfe_usdt:.4f}")
     log_event(f"captured_profit_usdt={captured_profit_usdt:.4f}")
     log_event(f"captured_vs_mfe_pct={captured_vs_mfe_pct:.2f}")
+    realized_fees = float(active_trade_state.get("realized_fees", active_trade_state.get("entry_fee", 0.0)))
+    gross_realized = float(active_trade_state.get("realized_gross_pnl", 0.0))
+    log_event(f"gross_vs_fees_ratio={(gross_realized / realized_fees) if realized_fees > 0 else 0.0:.4f}")
 
 
 def update_excursions(active_trade_state: Dict[str, Any], last_price: float) -> None:
@@ -1556,8 +1582,11 @@ while True:
                             log_event(f"new_stop={float(active_trade["stop_price"]):.2f}")
 
                 if ENABLE_BREAK_EVEN_STOP and not bool(active_trade.get("break_even_armed")):
-                    break_even_trigger_hit = (side == "LONG" and last_price >= entry_price * (1 + BREAK_EVEN_TRIGGER_PCT)) or (
-                        side == "SHORT" and last_price <= entry_price * (1 - BREAK_EVEN_TRIGGER_PCT)
+                    unrealized_gross = compute_gross_pnl(side, entry_price, last_price, current_qty)
+                    fees_so_far = float(active_trade.get("realized_fees", active_trade.get("entry_fee", 0.0)))
+                    break_even_trigger_hit = (
+                        ((side == "LONG" and last_price >= entry_price * (1 + BREAK_EVEN_TRIGGER_PCT)) or (side == "SHORT" and last_price <= entry_price * (1 - BREAK_EVEN_TRIGGER_PCT)))
+                        and unrealized_gross >= (fees_so_far * BREAK_EVEN_AFTER_FEE_MULTIPLIER)
                     )
                     if break_even_trigger_hit:
                         old_stop = float(active_trade["stop_price"])
@@ -1570,28 +1599,32 @@ while True:
                             log_event(f"old_stop={old_stop:.2f}")
                             log_event(f"new_stop={new_stop:.2f}")
 
-                if ENABLE_TRAILING_STOP_AFTER_PARTIAL and bool(active_trade.get("partial_tp_done")):
-                    old_stop = float(active_trade["stop_price"])
-                    if side == "LONG":
-                        reference_price = float(active_trade.get("highest_price_seen", last_price))
-                        trailing_stop_candidate = reference_price * (1 - TRAILING_STOP_BUFFER_PCT)
-                        if trailing_stop_candidate > old_stop:
-                            active_trade["stop_price"] = trailing_stop_candidate
-                            log_event("[TRAILING STOP UPDATED]")
-                            log_event(f"side={side}")
-                            log_event(f"old_stop={old_stop:.2f}")
-                            log_event(f"new_stop={trailing_stop_candidate:.2f}")
-                            log_event(f"reference_price={reference_price:.2f}")
-                    else:
-                        reference_price = float(active_trade.get("lowest_price_seen", last_price))
-                        trailing_stop_candidate = reference_price * (1 + TRAILING_STOP_BUFFER_PCT)
-                        if trailing_stop_candidate < old_stop:
-                            active_trade["stop_price"] = trailing_stop_candidate
-                            log_event("[TRAILING STOP UPDATED]")
-                            log_event(f"side={side}")
-                            log_event(f"old_stop={old_stop:.2f}")
-                            log_event(f"new_stop={trailing_stop_candidate:.2f}")
-                            log_event(f"reference_price={reference_price:.2f}")
+                if ENABLE_TRAILING_STOP_AFTER_PARTIAL:
+                    unrealized_gross = compute_gross_pnl(side, entry_price, last_price, current_qty)
+                    trailing_activation_pnl = float(active_trade.get("realized_fees", active_trade.get("entry_fee", 0.0))) * TRAILING_ACTIVATION_PNL_MULTIPLIER
+                    trailing_ready = bool(active_trade.get("partial_tp_done")) or unrealized_gross >= trailing_activation_pnl
+                    if trailing_ready:
+                        old_stop = float(active_trade["stop_price"])
+                        if side == "LONG":
+                            reference_price = float(active_trade.get("highest_price_seen", last_price))
+                            trailing_stop_candidate = reference_price * (1 - TRAILING_STOP_BUFFER_PCT)
+                            if trailing_stop_candidate > old_stop:
+                                active_trade["stop_price"] = trailing_stop_candidate
+                                log_event("[TRAILING STOP UPDATED]")
+                                log_event(f"side={side}")
+                                log_event(f"old_stop={old_stop:.2f}")
+                                log_event(f"new_stop={trailing_stop_candidate:.2f}")
+                                log_event(f"reference_price={reference_price:.2f}")
+                        else:
+                            reference_price = float(active_trade.get("lowest_price_seen", last_price))
+                            trailing_stop_candidate = reference_price * (1 + TRAILING_STOP_BUFFER_PCT)
+                            if trailing_stop_candidate < old_stop:
+                                active_trade["stop_price"] = trailing_stop_candidate
+                                log_event("[TRAILING STOP UPDATED]")
+                                log_event(f"side={side}")
+                                log_event(f"old_stop={old_stop:.2f}")
+                                log_event(f"new_stop={trailing_stop_candidate:.2f}")
+                                log_event(f"reference_price={reference_price:.2f}")
 
                 exit_reason = None
                 exit_reason_label = None
@@ -1927,6 +1960,9 @@ while True:
             last_reason = "breakout + volume"
             if executing_trade:
                 entry_origin = "debug_forced" if debug_forced_entry else "strategy"
+                signal_quality_score = float(candle["volume_score"]) + (1.0 if trend_aligned else 0.0) + (1.0 if volatility_ok else 0.0)
+                os.environ["CURRENT_SIGNAL_QUALITY_SCORE"] = f"{signal_quality_score:.6f}"
+                os.environ["CURRENT_SIGNAL_TREND_ALIGNED"] = "1" if trend_aligned else "0"
                 trade, execution_error = execute_trade(side, candle["close_price"], entry_origin=entry_origin)
                 if trade:
                     trade_times.append(int(time.time() * 1000))
