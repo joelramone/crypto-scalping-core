@@ -24,17 +24,19 @@ USE_TESTNET = env_bool("USE_TESTNET", True)
 VALIDATION_MODE = env_bool("VALIDATION_MODE", True)
 
 SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
-INTERVAL = Client.KLINE_INTERVAL_1MINUTE
+SIGNAL_INTERVAL = Client.KLINE_INTERVAL_5MINUTE
+EXECUTION_MONITOR_INTERVAL = Client.KLINE_INTERVAL_1MINUTE
+INTERVAL = SIGNAL_INTERVAL
 CANDLE_LIMIT = 100
 BREAKOUT_LOOKBACK = 10 if VALIDATION_MODE else 20
 VOLUME_LOOKBACK = 10 if VALIDATION_MODE else 20
 LOOKBACK = BREAKOUT_LOOKBACK
 TREND_TIMEFRAME = "15m"
-EMA_FAST = 50
-EMA_SLOW = 200
-MIN_VOLUME_SCORE = 0.7
-MICRO_BREAKOUT_FACTOR = 0.999
-MICRO_BREAKDOWN_FACTOR = 1.001
+EMA_FAST = 34
+EMA_SLOW = 144
+MIN_VOLUME_SCORE = float(os.getenv("MIN_VOLUME_SCORE", "0.9"))
+MICRO_BREAKOUT_FACTOR = float(os.getenv("MICRO_BREAKOUT_FACTOR", "1.0005"))
+MICRO_BREAKDOWN_FACTOR = float(os.getenv("MICRO_BREAKDOWN_FACTOR", "0.9995"))
 MIN_BREAKOUT_BODY_RATIO = float(os.getenv("MIN_BREAKOUT_BODY_RATIO", "0.7"))
 MAX_BREAKOUT_WICK_RATIO = float(os.getenv("MAX_BREAKOUT_WICK_RATIO", "0.3"))
 ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
@@ -42,7 +44,7 @@ ATR_AVG_WINDOW = int(os.getenv("ATR_AVG_WINDOW", "20"))
 CAPITAL_USDT = float(os.getenv("CAPITAL_USDT", "100"))
 RISK_PER_TRADE_USDT = float(os.getenv("RISK_PER_TRADE_USDT", "2.0"))
 STOP_PCT = float(os.getenv("STOP_PCT", "0.005"))
-TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.005")))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_PCT", "0.008")))
 MAX_TRADES_PER_HOUR = 3
 MAX_CONSECUTIVE_LOSSES = 3
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "10"))
@@ -54,6 +56,7 @@ WORKING_TYPE = os.getenv("FUTURES_WORKING_TYPE", "MARK_PRICE")
 DEBUG_FORCE_ENTRY = False
 DEBUG_DISABLE_PRICE_FILTER = False
 POSITION_MONITOR_INTERVAL_SECONDS = 60
+ENABLE_SHORTS = env_bool("ENABLE_SHORTS", False)
 POSITION_MONITOR_PROXIMITY_THRESHOLD = 0.15
 ENABLE_PARTIAL_TP = True
 PARTIAL_TP_TRIGGER_PCT = float(os.getenv("PARTIAL_TP_TRIGGER_PCT", "0.0025"))
@@ -70,6 +73,8 @@ TIME_EXIT_HIGH_QUALITY_MULTIPLIER = float(os.getenv("TIME_EXIT_HIGH_QUALITY_MULT
 TIME_EXIT_LOW_QUALITY_MULTIPLIER = float(os.getenv("TIME_EXIT_LOW_QUALITY_MULTIPLIER", "0.7"))
 TIME_EXIT_TRENDING_MULTIPLIER = float(os.getenv("TIME_EXIT_TRENDING_MULTIPLIER", "1.3"))
 BREAK_EVEN_AFTER_FEE_MULTIPLIER = float(os.getenv("BREAK_EVEN_AFTER_FEE_MULTIPLIER", "2.5"))
+FEE_MULTIPLE_THRESHOLD = float(os.getenv("FEE_MULTIPLE_THRESHOLD", "3.0"))
+MIN_EXPECTED_MOVE_PCT = float(os.getenv("MIN_EXPECTED_MOVE_PCT", "0.006"))
 TRAILING_ACTIVATION_PNL_MULTIPLIER = float(os.getenv("TRAILING_ACTIVATION_PNL_MULTIPLIER", "2.0"))
 TP_HIGH_QUALITY_MULTIPLIER = float(os.getenv("TP_HIGH_QUALITY_MULTIPLIER", "1.5"))
 ALLOW_LOW_ACTIVITY = env_bool("ALLOW_LOW_ACTIVITY", False)
@@ -139,6 +144,12 @@ tradeable_trades = 0
 low_activity_trades = 0
 tradeable_net_pnl = 0.0
 low_activity_net_pnl = 0.0
+timeframe_trade_counts: Dict[str, int] = {}
+timeframe_net_pnl: Dict[str, float] = {}
+total_move_pct = 0.0
+closed_trade_move_count = 0
+total_realized_vs_fees = 0.0
+closed_realized_vs_fees_count = 0
 closed_trade_net_pnls: Deque[float] = deque(maxlen=2000)
 
 last_signal = "NONE"
@@ -226,11 +237,21 @@ def append_trade_log(trade: Dict[str, Any]) -> None:
     safe_write_json(TRADES_LOG_FILE, rows)
 
 
-def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_balance: float, side: Optional[str] = None, market_regime: Optional[str] = None) -> None:
+def update_metrics(
+    net_pnl_value: float,
+    gross_pnl: float,
+    fees: float,
+    current_balance: float,
+    side: Optional[str] = None,
+    market_regime: Optional[str] = None,
+    signal_timeframe: Optional[str] = None,
+    move_pct: Optional[float] = None,
+) -> None:
     global total_trades, wins, losses, gross_profit_sum, gross_loss_sum, fees_paid, net_pnl_total, equity_peak, max_drawdown_pct, win_net_pnl_sum, loss_net_pnl_sum
     global long_trades, short_trades, long_wins, short_wins, long_losses, short_losses, long_net_pnl, short_net_pnl
     global long_win_pnl_sum, long_loss_pnl_sum, short_win_pnl_sum, short_loss_pnl_sum
     global tradeable_trades, low_activity_trades, tradeable_net_pnl, low_activity_net_pnl
+    global total_move_pct, closed_trade_move_count, total_realized_vs_fees, closed_realized_vs_fees_count
     total_trades += 1
     closed_trade_net_pnls.append(net_pnl_value)
     if net_pnl_value >= 0:
@@ -272,6 +293,15 @@ def update_metrics(net_pnl_value: float, gross_pnl: float, fees: float, current_
         low_activity_net_pnl += net_pnl_value
 
     fees_paid += fees
+    if signal_timeframe:
+        timeframe_trade_counts[signal_timeframe] = timeframe_trade_counts.get(signal_timeframe, 0) + 1
+        timeframe_net_pnl[signal_timeframe] = timeframe_net_pnl.get(signal_timeframe, 0.0) + net_pnl_value
+    if move_pct is not None:
+        total_move_pct += abs(move_pct)
+        closed_trade_move_count += 1
+    if fees > 0:
+        total_realized_vs_fees += gross_pnl / fees
+        closed_realized_vs_fees_count += 1
     net_pnl_total += net_pnl_value
     equity_peak = max(equity_peak, current_balance)
     dd = (equity_peak - current_balance) / equity_peak if equity_peak > 0 else 0.0
@@ -303,6 +333,9 @@ def metrics_snapshot() -> Any:
     rolling_10_win_rate = None
     rolling_10_expectancy = None
     rolling_10_profit_factor = None
+    fee_drag_ratio = (fees_paid / abs(gross_profit_sum + gross_loss_sum)) if abs(gross_profit_sum + gross_loss_sum) > 0 else None
+    avg_move_size_pct = (total_move_pct / closed_trade_move_count) if closed_trade_move_count > 0 else None
+    avg_realized_vs_fees = (total_realized_vs_fees / closed_realized_vs_fees_count) if closed_realized_vs_fees_count > 0 else None
     if rolling_10:
         rolling_10_wins = sum(1 for pnl in rolling_10 if pnl >= 0)
         rolling_10_win_rate = (rolling_10_wins / len(rolling_10)) * 100
@@ -323,6 +356,9 @@ def metrics_snapshot() -> Any:
         rolling_10_win_rate,
         rolling_10_expectancy,
         rolling_10_profit_factor,
+        fee_drag_ratio,
+        avg_move_size_pct,
+        avg_realized_vs_fees,
     )
 
 
@@ -404,6 +440,7 @@ def print_trade_closed_summary(
     max_favorable_excursion_usdt: float,
     max_adverse_excursion_usdt: float,
     market_regime_at_entry: Optional[str] = None,
+    signal_timeframe: Optional[str] = None,
 ) -> None:
     (
         win_rate,
@@ -417,6 +454,9 @@ def print_trade_closed_summary(
         rolling_10_win_rate,
         rolling_10_expectancy,
         rolling_10_profit_factor,
+        fee_drag_ratio,
+        avg_move_size_pct,
+        avg_realized_vs_fees,
     ) = metrics_snapshot()
     (
         d_long_trades,
@@ -458,6 +498,7 @@ def print_trade_closed_summary(
     print(f"exit_reason={exit_reason}")
     print(f"partial_tp_done={partial_tp_done}")
     print(f"market_regime_at_entry={market_regime_at_entry}")
+    print(f"signal_timeframe={signal_timeframe}")
     print(f"max_favorable_excursion_usdt={max_favorable_excursion_usdt:.4f}")
     print(f"max_adverse_excursion_usdt={max_adverse_excursion_usdt:.4f}")
     mfe_captured_pct = (gross_pnl / max_favorable_excursion_usdt * 100.0) if max_favorable_excursion_usdt > 0 else None
@@ -479,6 +520,9 @@ def print_trade_closed_summary(
     print(f"rolling_10_win_rate={format_metric_value(rolling_10_win_rate, '.2f')}%")
     print(f"rolling_10_expectancy={format_metric_value(rolling_10_expectancy, '.4f')}")
     print(f"rolling_10_profit_factor={format_metric_value(rolling_10_profit_factor, '.2f')}")
+    print(f"fee_drag_ratio={format_metric_value(fee_drag_ratio, '.4f')}")
+    print(f"avg_move_size_pct={format_metric_value(avg_move_size_pct, '.4f')}")
+    print(f"avg_realized_vs_fees={format_metric_value(avg_realized_vs_fees, '.4f')}")
     print()
     print("directional_summary:")
     print(f"long_trades={d_long_trades}")
@@ -529,6 +573,9 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         rolling_10_win_rate,
         rolling_10_expectancy,
         rolling_10_profit_factor,
+        fee_drag_ratio,
+        avg_move_size_pct,
+        avg_realized_vs_fees,
     ) = metrics_snapshot()
     (
         d_long_trades,
@@ -572,7 +619,10 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "timestamp_utc": utc_now_iso(),
         "mode": "paper" if PAPER_MODE else "real",
         "symbol": SYMBOL,
-        "timeframe": "1m",
+        "timeframe": SIGNAL_INTERVAL,
+        "signal_timeframe": SIGNAL_INTERVAL,
+        "execution_monitor_timeframe": EXECUTION_MONITOR_INTERVAL,
+        "enable_shorts": ENABLE_SHORTS,
         "trend_timeframe": TREND_TIMEFRAME,
         "margin_type": MARGIN_TYPE,
         "leverage": FUTURES_LEVERAGE,
@@ -623,6 +673,12 @@ def export_dashboard_state(last_closed_candle_ms: Optional[int], trades_this_hou
         "rolling_10_win_rate": rolling_10_win_rate,
         "rolling_10_expectancy": rolling_10_expectancy,
         "rolling_10_profit_factor": rolling_10_profit_factor,
+        "pnl_by_timeframe": dict(timeframe_net_pnl),
+        "trade_count_by_timeframe": dict(timeframe_trade_counts),
+        "pnl_by_direction": {"LONG": d_long_net_pnl, "SHORT": d_short_net_pnl},
+        "fee_drag_ratio": fee_drag_ratio,
+        "avg_move_size_pct": avg_move_size_pct,
+        "avg_realized_vs_fees": avg_realized_vs_fees,
         "long_trades": d_long_trades,
         "short_trades": d_short_trades,
         "long_wins": d_long_wins,
@@ -667,6 +723,7 @@ def log_trade_exit(
     max_favorable_excursion_usdt: Optional[float] = None,
     max_adverse_excursion_usdt: Optional[float] = None,
     market_regime_at_entry: Optional[str] = None,
+    signal_timeframe: Optional[str] = None,
 ) -> None:
     global last_trade_snapshot
     result = "WIN" if net_pnl_value >= 0 else "LOSS"
@@ -693,6 +750,9 @@ def log_trade_exit(
         "max_adverse_excursion_usdt": max_adverse_excursion_usdt,
         "mfe_captured_pct": mfe_captured_pct,
         "market_regime_at_entry": market_regime_at_entry,
+        "signal_timeframe": signal_timeframe,
+        "move_pct": abs(exit_price - entry_price) / entry_price if entry_price > 0 else None,
+        "realized_vs_fees": gross_pnl / fees if fees > 0 else None,
     }
     append_trade_log(trade)
     last_trade_snapshot = trade
@@ -703,6 +763,7 @@ def bootstrap_metrics_from_trades() -> None:
     global long_trades, short_trades, long_wins, short_wins, long_losses, short_losses, long_net_pnl, short_net_pnl
     global long_win_pnl_sum, long_loss_pnl_sum, short_win_pnl_sum, short_loss_pnl_sum
     global tradeable_trades, low_activity_trades, tradeable_net_pnl, low_activity_net_pnl
+    global total_move_pct, closed_trade_move_count, total_realized_vs_fees, closed_realized_vs_fees_count
     trades = load_trade_log()
     if not trades:
         return
@@ -717,10 +778,24 @@ def bootstrap_metrics_from_trades() -> None:
         gross = safe_float(trade.get("gross_pnl")) or 0.0
         fees = safe_float(trade.get("fees")) or 0.0
         duration = safe_float(trade.get("duration_minutes"))
+        signal_timeframe = str(trade.get("signal_timeframe", SIGNAL_INTERVAL))
+        move_pct = safe_float(trade.get("move_pct"))
+        realized_vs_fees = safe_float(trade.get("realized_vs_fees"))
 
         total_trades += 1
         net_pnl_total += net
         fees_paid += fees
+        timeframe_trade_counts[signal_timeframe] = timeframe_trade_counts.get(signal_timeframe, 0) + 1
+        timeframe_net_pnl[signal_timeframe] = timeframe_net_pnl.get(signal_timeframe, 0.0) + net
+        if move_pct is not None:
+            total_move_pct += abs(move_pct)
+            closed_trade_move_count += 1
+        if realized_vs_fees is not None:
+            total_realized_vs_fees += realized_vs_fees
+            closed_realized_vs_fees_count += 1
+        elif fees > 0:
+            total_realized_vs_fees += gross / fees
+            closed_realized_vs_fees_count += 1
         if net >= 0:
             wins += 1
             win_net_pnl_sum += net
@@ -961,7 +1036,7 @@ def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]) -> None:
     global recent_closed_klines_cache
     closed_klines = recent_closed_klines_cache[-200:]
     if not closed_klines:
-        klines = call_with_time_sync("futures_klines(chart)", client.futures_klines, symbol=SYMBOL, interval=INTERVAL, limit=201)
+        klines = call_with_time_sync("futures_klines(chart)", client.futures_klines, symbol=SYMBOL, interval=EXECUTION_MONITOR_INTERVAL, limit=201)
         if len(klines) < 2:
             return
         closed_klines = klines[:-1][-200:]
@@ -1002,7 +1077,10 @@ def export_candles_snapshot(active_trade: Optional[Dict[str, Any]]) -> None:
 
     payload = {
         "symbol": SYMBOL,
-        "timeframe": "1m",
+        "timeframe": EXECUTION_MONITOR_INTERVAL,
+        "signal_timeframe": SIGNAL_INTERVAL,
+        "execution_monitor_timeframe": EXECUTION_MONITOR_INTERVAL,
+        "enable_shorts": ENABLE_SHORTS,
         "updated_at_utc": utc_now_iso(),
         "candles": candles,
         "ema_fast": ema_fast,
@@ -1179,7 +1257,10 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
     estimated_exit_fee = notional * FUTURES_TAKER_FEE_RATE
     expected_move_usdt = abs(take_profit_price - entry_price) * qty
     estimated_total_fees = estimated_entry_fee + estimated_exit_fee
-    if expected_move_usdt < (2.0 * estimated_total_fees):
+    expected_move_pct = abs(take_profit_price - entry_price) / entry_price if entry_price > 0 else 0.0
+    if expected_move_pct < MIN_EXPECTED_MOVE_PCT:
+        return None, "skipped_expected_move_too_small"
+    if expected_move_usdt < (FEE_MULTIPLE_THRESHOLD * estimated_total_fees):
         return None, "skipped_min_profitability"
     return {
         "current_price": current_price,
@@ -1193,6 +1274,7 @@ def build_trade_plan(side: str, current_price: float, usdt_before: float) -> Tup
         "estimated_exit_fee": estimated_exit_fee,
         "expected_move_usdt": expected_move_usdt,
         "estimated_total_fees": estimated_total_fees,
+        "expected_move_pct": expected_move_pct,
         "signal_quality_score": signal_quality_score,
     }, ""
 
@@ -1246,6 +1328,10 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
             "max_adverse_excursion_usdt": 0.0,
             "exit_reason": None,
             "signal_quality_score": float(plan.get("signal_quality_score", 1.0)),
+            "signal_timeframe": SIGNAL_INTERVAL,
+            "expected_move_usdt": float(plan.get("expected_move_usdt", 0.0)),
+            "estimated_total_fees": float(plan.get("estimated_total_fees", 0.0)),
+            "expected_move_pct": float(plan.get("expected_move_pct", 0.0)),
             "trend_aligned": os.getenv("CURRENT_SIGNAL_TREND_ALIGNED", "0") == "1",
         }, "", qty
 
@@ -1302,6 +1388,10 @@ def place_trade(side: str, current_price: float) -> Tuple[Optional[Dict[str, Any
         "max_favorable_excursion_usdt": 0.0,
         "max_adverse_excursion_usdt": 0.0,
         "exit_reason": None,
+        "signal_timeframe": SIGNAL_INTERVAL,
+        "expected_move_usdt": float(plan.get("expected_move_usdt", 0.0)),
+        "estimated_total_fees": float(plan.get("estimated_total_fees", 0.0)),
+        "expected_move_pct": float(plan.get("expected_move_pct", 0.0)),
     }, "", qty
 
 
@@ -1676,7 +1766,7 @@ while True:
                         f"[PAPER EXIT {exit_reason}] exit={exit_price:.2f} qty={remaining_qty:.6f} side={active_trade['side']} "
                         f"gross_pnl={gross_pnl:.4f} fees={total_fees:.4f} net_pnl={net_pnl_value:.4f} balance={paper_usdt_balance:.4f}"
                     )
-                    update_metrics(net_pnl_value, total_gross_pnl, total_fees, paper_usdt_balance, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")))
+                    update_metrics(net_pnl_value, total_gross_pnl, total_fees, paper_usdt_balance, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")), str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)), abs(exit_price - entry_price) / entry_price if entry_price > 0 else None)
                     update_trade_duration_metrics(duration_minutes)
                     log_trade_performance_metrics(active_trade, duration_minutes, net_pnl_value)
                     log_trade_exit(
@@ -1694,6 +1784,7 @@ while True:
                         float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
                         float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                         str(active_trade.get("entry_market_regime", "TRADEABLE")),
+                        str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)),
                     )
                     print_trade_closed_summary(
                         exit_reason,
@@ -1711,6 +1802,7 @@ while True:
                         float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
                         float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                         str(active_trade.get("entry_market_regime", "TRADEABLE")),
+                        str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)),
                     )
                     active_trade = None
                     in_position = False
@@ -1734,7 +1826,7 @@ while True:
                     duration_minutes = max(0.0, (int(time.time() * 1000) - int(active_trade.get("entry_time_ms", int(time.time() * 1000)))) / 60000.0)
                     log_event(f"[FUTURES EXIT {result}] gross_pnl={gross_pnl:.4f} fees={fees:.4f} net_pnl={net_pnl_value:.4f} balance={usdt_now:.4f}")
                     consecutive_losses = consecutive_losses + 1 if net_pnl_value < 0 else 0
-                    update_metrics(net_pnl_value, gross_pnl, fees, usdt_now, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")))
+                    update_metrics(net_pnl_value, gross_pnl, fees, usdt_now, active_trade["side"], str(active_trade.get("entry_market_regime", "TRADEABLE")), str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)), abs(exit_price - float(active_trade.get("entry_price", exit_price))) / float(active_trade.get("entry_price", exit_price)) if float(active_trade.get("entry_price", exit_price)) > 0 else None)
                     update_trade_duration_metrics(duration_minutes)
                     log_trade_performance_metrics(active_trade, duration_minutes, net_pnl_value)
                     log_trade_exit(
@@ -1752,6 +1844,7 @@ while True:
                         float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
                         float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                         str(active_trade.get("entry_market_regime", "TRADEABLE")),
+                        str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)),
                     )
                     print_trade_closed_summary(
                         result,
@@ -1769,6 +1862,7 @@ while True:
                         float(active_trade.get("max_favorable_excursion_usdt", 0.0)),
                         float(active_trade.get("max_adverse_excursion_usdt", 0.0)),
                         str(active_trade.get("entry_market_regime", "TRADEABLE")),
+                        str(active_trade.get("signal_timeframe", SIGNAL_INTERVAL)),
                     )
                     active_trade = None
                     in_position = False
@@ -1849,7 +1943,7 @@ while True:
         candle_high = candle["high_price"]
         candle_low = candle["low_price"]
         long_signal = long_breakout and volume_ok and trend_filter_long_ok and candle_strength_ok and volatility_ok
-        short_signal = short_breakdown and volume_ok and trend_filter_short_ok and candle_strength_ok and volatility_ok
+        short_signal = ENABLE_SHORTS and short_breakdown and volume_ok and trend_filter_short_ok and candle_strength_ok and volatility_ok
         trigger_price = candle["highest_high"] * MICRO_BREAKOUT_FACTOR if long_signal else candle["lowest_low"] * MICRO_BREAKDOWN_FACTOR
         if DEBUG_DISABLE_PRICE_FILTER:
             price_valid = True

@@ -73,6 +73,8 @@ class BreakoutTrendStrategy(BaseStrategy):
         return self._maybe_short(data, ema_value, atr_value)
 
     def _maybe_short(self, data, ema_value: float, atr_value: float):
+        if not bool(getattr(self.config, "enable_shorts", False)):
+            return None
         close = data["close"]
         high = data["high"]
         low = data["low"]
@@ -241,12 +243,19 @@ class BreakoutTrendStrategy(BaseStrategy):
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
-    def _build_signal(self, side: str, entry: float, atr_value: float, signal_quality_score: int, score_components: dict[str, int], regime: str | None) -> dict[str, float | str | bool | int | dict[str, int] | None]:
+    def _build_signal(self, side: str, entry: float, atr_value: float, signal_quality_score: int, score_components: dict[str, int], regime: str | None) -> dict[str, float | str | bool | int | dict[str, int] | None] | None:
         sl_distance = atr_value * float(self.config.atr_sl_multiplier)
         risk_per_trade = sl_distance
         min_tp_distance = risk_per_trade * float(getattr(self.config, "min_take_profit_r", 1.5))
         atr_tp_distance = atr_value * float(getattr(self.config, "atr_tp_multiplier", 2.0))
         tp_distance = max(min_tp_distance, atr_tp_distance)
+
+        expected_move_pct = tp_distance / entry if entry > 0 else 0.0
+        estimated_fee_pct = float(getattr(self.config, "fee_rate", 0.0004)) * 2.0
+        fee_multiple_threshold = float(getattr(self.config, "fee_multiple_threshold", 3.0))
+        min_expected_move_pct = float(getattr(self.config, "min_expected_move_pct", 0.006))
+        if expected_move_pct < min_expected_move_pct or expected_move_pct < (estimated_fee_pct * fee_multiple_threshold):
+            return None
 
         if side == "LONG":
             sl = entry - sl_distance
@@ -265,6 +274,8 @@ class BreakoutTrendStrategy(BaseStrategy):
             "signal_quality_score": signal_quality_score,
             "score_components": score_components,
             "regime": regime,
+            "signal_timeframe": str(getattr(self.config, "signal_timeframe", "5m")),
+            "expected_move_pct": expected_move_pct,
             "trailing_stop_enabled": bool(getattr(self.config, "trailing_stop_enabled", False)),
             "trailing_stop_atr_multiplier": float(getattr(self.config, "trailing_stop_atr_multiplier", 1.0)),
         }

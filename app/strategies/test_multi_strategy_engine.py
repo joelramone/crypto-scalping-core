@@ -42,13 +42,28 @@ def test_routes_to_breakout_on_trending_regime():
     assert mean_rev.calls == 0
 
 
-def test_routes_to_mean_reversion_on_low_activity():
+def test_blocks_short_from_mean_reversion_when_shorts_disabled():
     breakout = StubStrategy(side="LONG")
     mean_rev = StubStrategy(side="SHORT")
     engine = MultiStrategyEngine(breakout_strategy=breakout, mean_reversion_strategy=mean_rev, regime_agent=StubRegimeAgent(RegimeAgent.LOW_ACTIVITY))
 
     signal = engine.generate_signal(_market_data())
 
-    assert signal == {"side": "SHORT"}
+    assert signal is None
     assert breakout.calls == 0
     assert mean_rev.calls == 1
+
+
+def test_allows_short_when_shorts_enabled():
+    breakout = StubStrategy(side="LONG")
+    mean_rev = StubStrategy(side="SHORT")
+    engine = MultiStrategyEngine(
+        breakout_strategy=breakout,
+        mean_reversion_strategy=mean_rev,
+        regime_agent=StubRegimeAgent(RegimeAgent.LOW_ACTIVITY),
+        enable_shorts=True,
+    )
+
+    signal = engine.generate_signal(_market_data())
+
+    assert signal == {"side": "SHORT"}
