@@ -5,6 +5,11 @@ from app.strategies.breakout_trend import BreakoutTrendStrategy
 
 @dataclass
 class StubBreakoutConfig:
+    enable_shorts: bool = False
+    signal_timeframe: str = "5m"
+    fee_rate: float = 0.0004
+    fee_multiple_threshold: float = 3.0
+    min_expected_move_pct: float = 0.006
     rsi_period: int = 7
     rsi_oversold: float = 20.0
     rsi_overbought: float = 80.0
@@ -62,7 +67,7 @@ def test_generates_long_signal_on_mean_reversion_setup():
     assert signal["side"] == "LONG"
 
 
-def test_generates_short_signal_on_mean_reversion_setup():
+def test_rejects_short_signal_when_shorts_disabled():
     strategy = _build_strategy()
     market_data = _base_market_data()
 
@@ -78,8 +83,7 @@ def test_generates_short_signal_on_mean_reversion_setup():
 
     signal = strategy.generate_signal(market_data)
 
-    assert signal is not None
-    assert signal["side"] == "SHORT"
+    assert signal is None
 
 
 def test_rejects_when_volume_is_not_elevated():
@@ -100,3 +104,25 @@ def test_rejects_when_confirmation_candle_missing():
     signal = strategy.generate_signal(market_data)
 
     assert signal is None
+
+
+def test_generates_short_signal_when_shorts_enabled():
+    config = StubBreakoutConfig(enable_shorts=True)
+    strategy = BreakoutTrendStrategy(config=config)
+    market_data = _base_market_data()
+
+    market_data["close"][-2] = 108.8
+    market_data["open"][-2] = 108.2
+    market_data["high"][-2] = 109.4
+    market_data["low"][-2] = 108.1
+    market_data["close"][-1] = 108.3
+    market_data["open"][-1] = 108.6
+    market_data["high"][-1] = 108.7
+    market_data["low"][-1] = 108.2
+    market_data["rsi_7"][-2] = 84.0
+
+    signal = strategy.generate_signal(market_data)
+
+    assert signal is not None
+    assert signal["side"] == "SHORT"
+    assert signal["signal_timeframe"] == "5m"

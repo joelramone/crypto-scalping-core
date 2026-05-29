@@ -25,6 +25,10 @@ class TradingCoreConfig:
     DAILY_MAX_LOSS: float = float(os.getenv("DAILY_MAX_LOSS", "0.03"))
     FEE_RATE: float = float(os.getenv("FEE_RATE", "0.0004"))
     SLIPPAGE_ESTIMATE: float = float(os.getenv("SLIPPAGE_ESTIMATE", "0.0002"))
+    ENABLE_SHORTS: bool = os.getenv("ENABLE_SHORTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+    SIGNAL_TIMEFRAME: str = os.getenv("SIGNAL_TIMEFRAME", "5m")
+    FEE_MULTIPLE_THRESHOLD: float = float(os.getenv("FEE_MULTIPLE_THRESHOLD", "3.0"))
+    MIN_EXPECTED_MOVE_PCT: float = float(os.getenv("MIN_EXPECTED_MOVE_PCT", "0.006"))
 
 
 TRADING_CORE_CONFIG = TradingCoreConfig()

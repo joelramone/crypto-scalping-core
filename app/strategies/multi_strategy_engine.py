@@ -7,10 +7,11 @@ from app.utils.logger import get_logger
 class MultiStrategyEngine:
     HIGH_VOLATILITY = RegimeAgent.HIGH_VOLATILITY
 
-    def __init__(self, breakout_strategy, mean_reversion_strategy, regime_agent: RegimeAgent | None = None) -> None:
+    def __init__(self, breakout_strategy, mean_reversion_strategy, regime_agent: RegimeAgent | None = None, enable_shorts: bool = False) -> None:
         self.breakout_strategy = breakout_strategy
         self.mean_reversion_strategy = mean_reversion_strategy
         self.regime_agent = regime_agent or RegimeAgent()
+        self.enable_shorts = enable_shorts
         self._last_signal_context: dict[str, float | str] | None = None
         self._trade_log: list[dict[str, float | str]] = []
         self._logger = get_logger(__name__)
@@ -48,6 +49,14 @@ class MultiStrategyEngine:
             self._last_signal_context = {
                 "strategy_name": getattr(selected_strategy, "name", selected_strategy.__class__.__name__),
                 "regime_detected": regime,
+            }
+            return None
+
+        if signal.get("side") == "SHORT" and not self.enable_shorts:
+            self._last_signal_context = {
+                "strategy_name": getattr(selected_strategy, "name", selected_strategy.__class__.__name__),
+                "regime_detected": regime,
+                "no_trade": "SHORTS_DISABLED",
             }
             return None
 
