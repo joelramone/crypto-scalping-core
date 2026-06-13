@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from app.utils.signal_rejections import SignalRejectionEvent, build_rejection_event, safe_ratio
+
 from .rsi_mean_reversion import BaseStrategy
 
 
 class BreakoutTrendStrategy(BaseStrategy):
     name = "BreakoutTrendStrategy"
 
+    def __init__(self, config):
+        super().__init__(config)
+        self._last_rejection_event: SignalRejectionEvent | None = None
+
     def generate_signal(self, data, regime=None):
+        self._last_rejection_event = None
         close = data.get("close") or []
         high = data.get("high") or []
         low = data.get("low") or []
@@ -27,9 +34,11 @@ class BreakoutTrendStrategy(BaseStrategy):
 
         atr_value = float(atr[-1])
         if atr_value <= 0:
+            self._set_rejection(data, regime, ["atr_invalid"], atr=atr_value, atr_status="invalid")
             return None
 
         if not self._passes_volatility_filter(atr):
+            self._set_rejection(data, regime, ["atr_too_low"], atr=atr_value, atr_status="low")
             return None
 
         ema_value = self._ema(close, ema_period)
@@ -37,10 +46,11 @@ class BreakoutTrendStrategy(BaseStrategy):
             return None
 
         if not self._passes_volume_spike_filter(volume):
+            self._set_rejection(data, regime, ["volume_too_low"], atr=atr_value, ema_value=ema_value)
             return None
 
         if not self._is_bullish_confirmation(open_prices, close):
-            return self._maybe_short(data, ema_value, atr_value)
+            return self._maybe_short(data, ema_value, atr_value, regime)
 
         long_rsi = self._resolve_rsi(data, side="LONG")
         if long_rsi is None:
@@ -68,11 +78,19 @@ class BreakoutTrendStrategy(BaseStrategy):
             )
             signal_quality_score = sum(score_components.values())
             if signal_quality_score >= int(getattr(self.config, "signal_score_threshold", 6)):
-                return self._build_signal(side="LONG", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=regime)
+                signal = self._build_signal(side="LONG", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=regime)
+                if signal is not None:
+                    return signal
+                self._set_rejection(data, regime, ["confidence_too_low"], score=float(signal_quality_score), required_score=float(getattr(self.config, "signal_score_threshold", 6)), atr=atr_value, ema_value=ema_value)
+            else:
+                self._set_rejection(data, regime, ["score_too_low"], score=float(signal_quality_score), required_score=float(getattr(self.config, "signal_score_threshold", 6)), atr=atr_value, ema_value=ema_value)
 
-        return self._maybe_short(data, ema_value, atr_value)
+        result = self._maybe_short(data, ema_value, atr_value, regime)
+        if result is None and self._last_rejection_event is None:
+            self._set_rejection(data, regime, ["score_too_low"], score=0.0, required_score=float(getattr(self.config, "signal_score_threshold", 6)), atr=atr_value, ema_value=ema_value)
+        return result
 
-    def _maybe_short(self, data, ema_value: float, atr_value: float):
+    def _maybe_short(self, data, ema_value: float, atr_value: float, regime=None):
         if not bool(getattr(self.config, "enable_shorts", False)):
             return None
         close = data["close"]
@@ -109,9 +127,66 @@ class BreakoutTrendStrategy(BaseStrategy):
             )
             signal_quality_score = sum(score_components.values())
             if signal_quality_score >= int(getattr(self.config, "signal_score_threshold", 6)):
-                return self._build_signal(side="SHORT", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=None)
+                signal = self._build_signal(side="SHORT", entry=entry, atr_value=atr_value, signal_quality_score=signal_quality_score, score_components=score_components, regime=None)
+                if signal is not None:
+                    return signal
+                self._set_rejection(data, regime, ["confidence_too_low"], score=float(signal_quality_score), required_score=float(getattr(self.config, "signal_score_threshold", 6)), atr=atr_value, ema_value=ema_value)
+            else:
+                self._set_rejection(data, regime, ["score_too_low"], score=float(signal_quality_score), required_score=float(getattr(self.config, "signal_score_threshold", 6)), atr=atr_value, ema_value=ema_value)
 
         return None
+
+    def consume_last_rejection_event(self) -> SignalRejectionEvent | None:
+        event = self._last_rejection_event
+        self._last_rejection_event = None
+        return event
+
+    def _set_rejection(
+        self,
+        data,
+        regime,
+        reasons: list[str],
+        *,
+        score: float | None = None,
+        required_score: float | None = None,
+        atr: float | None = None,
+        atr_status: str | None = None,
+        ema_value: float | None = None,
+    ) -> None:
+        self._last_rejection_event = build_rejection_event(
+            strategy=self.name,
+            regime=regime,
+            reasons=reasons,
+            score=score,
+            required_score=required_score,
+            atr=atr if atr is not None else self._current_atr(data),
+            atr_status=atr_status,
+            volume_ratio=self._volume_ratio(data),
+            ema_distance=self._ema_distance(data, ema_value),
+        )
+
+    @staticmethod
+    def _current_atr(data) -> float | None:
+        atr = data.get("atr") or []
+        return float(atr[-1]) if atr else None
+
+    def _volume_ratio(self, data) -> float | None:
+        volume = data.get("volume") or []
+        volume_avg_period = int(getattr(self.config, "volume_avg_period", 20))
+        if len(volume) < volume_avg_period + 1:
+            return None
+        avg_volume = sum(float(value) for value in volume[-(volume_avg_period + 1):-1]) / volume_avg_period
+        return safe_ratio(volume[-1], avg_volume)
+
+    def _ema_distance(self, data, ema_value: float | None) -> float | None:
+        close = data.get("close") or []
+        if not close:
+            return None
+        if ema_value is None:
+            ema_value = self._ema(close, int(getattr(self.config, "ema_period", 20)))
+        if ema_value is None:
+            return None
+        return float(close[-1]) - ema_value
 
     def _build_score_components(self, side, rsi_value, open_prices, high, low, close, volume, atr, atr_value, ema_value, regime):
         components = {

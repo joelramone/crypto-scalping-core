@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.utils.signal_rejections import SignalRejectionEvent, build_rejection_event, safe_ratio
+
 
 @dataclass(frozen=True)
 class MeanReversionConfig:
@@ -24,8 +26,10 @@ class MeanReversionAgent:
 
     def __init__(self, config: Any | None = None) -> None:
         self.config = config or MeanReversionConfig()
+        self._last_rejection_event: SignalRejectionEvent | None = None
 
     def generate_signal(self, data: dict[str, list[float]], regime: str | None = None):
+        self._last_rejection_event = None
         close = data.get("close") or []
         open_prices = data.get("open") or []
         high = data.get("high") or []
@@ -39,12 +43,15 @@ class MeanReversionAgent:
 
         atr_value = float(atr[-1])
         if atr_value <= 0.0:
+            self._set_rejection(data, regime, ["atr_invalid"], atr=atr_value, atr_status="invalid")
             return None
 
         if not self._passes_volatility_filter(atr, high, low):
+            self._set_rejection(data, regime, ["atr_too_low"], atr=atr_value, atr_status="low")
             return None
 
         if not self._passes_volume_spike_filter(volume):
+            self._set_rejection(data, regime, ["volume_too_low"], atr=atr_value)
             return None
 
         ema_value = self._ema(close, self.config.ema_period)
@@ -78,6 +85,7 @@ class MeanReversionAgent:
             long_score = sum(long_components.values())
             if long_score >= min_score_threshold:
                 return self._build_signal(side="LONG", entry=float(close[-1]), atr_value=atr_value, signal_quality_score=long_score, score_components=long_components, regime=regime)
+            self._set_rejection(data, regime, ["score_too_low"], score=float(long_score), required_score=float(min_score_threshold), atr=atr_value, ema_value=ema_value)
 
         if short_rsi > 80.0 and float(close[-2]) > (ema_value + extension):
             short_components = self._score_components(
@@ -96,8 +104,63 @@ class MeanReversionAgent:
             short_score = sum(short_components.values())
             if short_score >= min_score_threshold:
                 return self._build_signal(side="SHORT", entry=float(close[-1]), atr_value=atr_value, signal_quality_score=short_score, score_components=short_components, regime=regime)
+            self._set_rejection(data, regime, ["score_too_low"], score=float(short_score), required_score=float(min_score_threshold), atr=atr_value, ema_value=ema_value)
 
+        if self._last_rejection_event is None:
+            self._set_rejection(data, regime, ["score_too_low"], score=0.0, required_score=float(min_score_threshold), atr=atr_value, ema_value=ema_value)
         return None
+
+    def consume_last_rejection_event(self) -> SignalRejectionEvent | None:
+        event = self._last_rejection_event
+        self._last_rejection_event = None
+        return event
+
+    def _set_rejection(
+        self,
+        data: dict[str, list[float]],
+        regime: str | None,
+        reasons: list[str],
+        *,
+        score: float | None = None,
+        required_score: float | None = None,
+        atr: float | None = None,
+        atr_status: str | None = None,
+        ema_value: float | None = None,
+    ) -> None:
+        self._last_rejection_event = build_rejection_event(
+            strategy=self.name,
+            regime=regime,
+            reasons=reasons,
+            score=score,
+            required_score=required_score,
+            atr=atr if atr is not None else self._current_atr(data),
+            atr_status=atr_status,
+            volume_ratio=self._volume_ratio(data),
+            ema_distance=self._ema_distance(data, ema_value),
+        )
+
+    @staticmethod
+    def _current_atr(data: dict[str, list[float]]) -> float | None:
+        atr = data.get("atr") or []
+        return float(atr[-1]) if atr else None
+
+    def _volume_ratio(self, data: dict[str, list[float]]) -> float | None:
+        volume = data.get("volume") or []
+        period = int(getattr(self.config, "volume_avg_period", 20))
+        if len(volume) < period + 1:
+            return None
+        avg_volume = sum(float(value) for value in volume[-(period + 1):-1]) / period
+        return safe_ratio(volume[-1], avg_volume)
+
+    def _ema_distance(self, data: dict[str, list[float]], ema_value: float | None) -> float | None:
+        close = data.get("close") or []
+        if not close:
+            return None
+        if ema_value is None:
+            ema_value = self._ema(close, int(getattr(self.config, "ema_period", 20)))
+        if ema_value is None:
+            return None
+        return float(close[-1]) - ema_value
 
     def _passes_volatility_filter(self, atr: list[float], high: list[float], low: list[float]) -> bool:
         period = self.config.atr_period

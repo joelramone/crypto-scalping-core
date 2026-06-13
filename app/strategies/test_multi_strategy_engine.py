@@ -67,3 +67,45 @@ def test_allows_short_when_shorts_enabled():
     signal = engine.generate_signal(_market_data())
 
     assert signal == {"side": "SHORT"}
+
+class RejectingStubStrategy:
+    name = "RejectingStubStrategy"
+
+    def __init__(self):
+        self.calls = 0
+        self._event = None
+
+    def generate_signal(self, market_data, regime=None):
+        from app.utils.signal_rejections import build_rejection_event
+
+        self.calls += 1
+        self._event = build_rejection_event(
+            strategy=self.name,
+            regime=regime,
+            score=3.0,
+            required_score=5.0,
+            atr=float(market_data["atr"][-1]),
+            atr_status="ok",
+            volume_ratio=0.82,
+            ema_distance=1.5,
+            reasons=["score_too_low"],
+        )
+        return None
+
+    def consume_last_rejection_event(self):
+        event = self._event
+        self._event = None
+        return event
+
+
+def test_tracks_rejection_counter_from_strategy_context():
+    breakout = StubStrategy(side="LONG")
+    mean_rev = RejectingStubStrategy()
+    engine = MultiStrategyEngine(breakout_strategy=breakout, mean_reversion_strategy=mean_rev, regime_agent=StubRegimeAgent(RegimeAgent.LOW_ACTIVITY))
+
+    signal = engine.generate_signal(_market_data())
+
+    assert signal is None
+    assert mean_rev.calls == 1
+    assert engine.rejection_counters.rejected_by_score == 1
+    assert engine.rejection_counters.rejected_by_volume == 0
