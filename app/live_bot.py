@@ -11,6 +11,12 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from app.utils.signal_rejections import SignalRejectionTracker, build_rejection_event
+
 
 def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -86,6 +92,7 @@ CANDLES_FILE = RUNTIME_DIR / "candles.json"
 PAPER_CONFIG_FILE = RUNTIME_DIR / "paper_config.json"
 recent_closed_klines_cache: List[List[Any]] = []
 recent_signal_markers: Deque[Dict[str, Any]] = deque(maxlen=400)
+signal_rejection_tracker = SignalRejectionTracker()
 
 
 def ensure_runtime_files() -> None:
@@ -113,6 +120,69 @@ def safe_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+
+
+def emit_signal_rejection_summary_if_due() -> None:
+    for line in signal_rejection_tracker.maybe_hourly_summary_lines():
+        log_event(line)
+
+
+def log_signal_rejection(
+    *,
+    strategy: str,
+    regime: str,
+    score: Optional[float],
+    required_score: Optional[float],
+    atr: Optional[float],
+    atr_status: Optional[str],
+    volume_ratio: Optional[float],
+    ema_distance: Optional[float],
+    reasons: List[str],
+) -> None:
+    event = build_rejection_event(
+        strategy=strategy,
+        regime=regime,
+        score=score,
+        required_score=required_score,
+        atr=atr,
+        atr_status=atr_status,
+        volume_ratio=volume_ratio,
+        ema_distance=ema_distance,
+        reasons=reasons,
+    )
+    signal_rejection_tracker.record(event)
+    for line in SignalRejectionTracker.format_rejection_lines(event):
+        log_event(line)
+
+
+def build_live_signal_rejection_reasons(
+    *,
+    signal_detected: bool,
+    volume_ok: bool,
+    trend_filter_ok: bool,
+    candle_strength_ok: bool,
+    volatility_ok: bool,
+    breakout_ok: bool,
+    low_activity_blocked: bool,
+    price_valid: bool,
+    candle_valid: bool,
+) -> List[str]:
+    reasons: List[str] = []
+    if not volume_ok:
+        reasons.append("volume_too_low")
+    if not volatility_ok:
+        reasons.append("atr_too_low")
+    if low_activity_blocked:
+        reasons.append("regime_low_activity")
+    if not signal_detected and not breakout_ok:
+        reasons.append("score_too_low")
+    if not trend_filter_ok or not candle_strength_ok:
+        reasons.append("confidence_too_low")
+    if signal_detected and not price_valid:
+        reasons.append("confidence_price_invalid")
+    if signal_detected and not candle_valid:
+        reasons.append("confidence_candle_invalid")
+    return reasons or ["score_too_low"]
 
 # Metrics
 total_trades = 0
@@ -1900,6 +1970,8 @@ while True:
                 export_runtime_state(last_processed_candle_time, len(trade_times), consecutive_losses, active_trade, last_market_state)
                 break
 
+        emit_signal_rejection_summary_if_due()
+
         candle = get_closed_candle_data()
         if candle is None:
             last_reason = "not_enough_candles"
@@ -2019,8 +2091,60 @@ while True:
             if not execution_allowed:
                 entry_block_reason = get_entry_block_reason(signal_detected, in_position, trade_limit_ok, volume_ok, breakout_ok, candle_valid, price_valid, low_activity_blocked)
                 log_event(f"[ENTRY BLOCKED] reason={entry_block_reason}")
+                rejection_reasons = build_live_signal_rejection_reasons(
+                    signal_detected=signal_detected,
+                    volume_ok=volume_ok,
+                    trend_filter_ok=trend_filter_ok,
+                    candle_strength_ok=candle_strength_ok,
+                    volatility_ok=volatility_ok,
+                    breakout_ok=breakout_ok,
+                    low_activity_blocked=low_activity_blocked,
+                    price_valid=price_valid,
+                    candle_valid=candle_valid,
+                )
+                if in_position:
+                    rejection_reasons.append("confidence_already_in_position")
+                if not trade_limit_ok:
+                    rejection_reasons.append("confidence_trade_limit")
+                live_score = float(candle["volume_score"]) + (1.0 if trend_filter_ok else 0.0) + (1.0 if candle_strength_ok else 0.0) + (1.0 if volatility_ok else 0.0)
+                ema_reference = ema200 if ema200 is not None else ema50
+                log_signal_rejection(
+                    strategy="live_breakout",
+                    regime=last_market_state,
+                    score=live_score,
+                    required_score=4.0,
+                    atr=atr_value,
+                    atr_status="ok" if volatility_ok else "low",
+                    volume_ratio=float(candle["volume_score"]),
+                    ema_distance=(float(candle["close_price"]) - float(ema_reference)) if ema_reference is not None else None,
+                    reasons=rejection_reasons,
+                )
 
         if not signal_detected:
+            rejection_reasons = build_live_signal_rejection_reasons(
+                signal_detected=signal_detected,
+                volume_ok=volume_ok,
+                trend_filter_ok=trend_filter_ok,
+                candle_strength_ok=candle_strength_ok,
+                volatility_ok=volatility_ok,
+                breakout_ok=breakout_ok,
+                low_activity_blocked=low_activity_blocked,
+                price_valid=price_valid,
+                candle_valid=candle_valid,
+            )
+            live_score = float(candle["volume_score"]) + (1.0 if trend_filter_ok else 0.0) + (1.0 if candle_strength_ok else 0.0) + (1.0 if volatility_ok else 0.0)
+            ema_reference = ema200 if ema200 is not None else ema50
+            log_signal_rejection(
+                strategy="live_breakout",
+                regime=last_market_state,
+                score=live_score,
+                required_score=4.0,
+                atr=atr_value,
+                atr_status="ok" if volatility_ok else "low",
+                volume_ratio=float(candle["volume_score"]),
+                ema_distance=(float(candle["close_price"]) - float(ema_reference)) if ema_reference is not None else None,
+                reasons=rejection_reasons,
+            )
             if not volume_ok:
                 last_reason = "low_volume"
             elif not trend_filter_ok:
