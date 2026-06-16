@@ -41,6 +41,7 @@ TREND_TIMEFRAME = "15m"
 EMA_FAST = 34
 EMA_SLOW = 144
 MIN_VOLUME_SCORE = float(os.getenv("MIN_VOLUME_SCORE", "0.9"))
+LOW_ACTIVITY_VOLATILITY_THRESHOLD = float(os.getenv("LOW_ACTIVITY_VOLATILITY_THRESHOLD", "0.001"))
 MICRO_BREAKOUT_FACTOR = float(os.getenv("MICRO_BREAKOUT_FACTOR", "1.0005"))
 MICRO_BREAKDOWN_FACTOR = float(os.getenv("MICRO_BREAKDOWN_FACTOR", "0.9995"))
 MIN_BREAKOUT_BODY_RATIO = float(os.getenv("MIN_BREAKOUT_BODY_RATIO", "0.7"))
@@ -1217,7 +1218,13 @@ def get_closed_candle_data() -> Optional[Dict[str, Any]]:
     volume_sma20 = sum(float(k[5]) for k in vol20_history) / len(vol20_history)
     volatility_score = (atr14 / close_price) if atr14 and close_price > 0 else 0.0
     volume_score = (close_volume / volume_sma20) if volume_sma20 > 0 else 0.0
-    market_state = "LOW_ACTIVITY" if (volatility_score < 0.001 or volume_score < MIN_VOLUME_SCORE) else "TRADEABLE"
+    atr_threshold = close_price * LOW_ACTIVITY_VOLATILITY_THRESHOLD
+    volume_threshold = volume_sma20 * MIN_VOLUME_SCORE
+    volatility_threshold = LOW_ACTIVITY_VOLATILITY_THRESHOLD
+    volatility_component_score = (volatility_score / volatility_threshold) if volatility_threshold > 0 else 0.0
+    volume_component_score = (volume_score / MIN_VOLUME_SCORE) if MIN_VOLUME_SCORE > 0 else 0.0
+    final_regime_score = min(volatility_component_score, volume_component_score)
+    market_state = "LOW_ACTIVITY" if (volatility_score < LOW_ACTIVITY_VOLATILITY_THRESHOLD or volume_score < MIN_VOLUME_SCORE) else "TRADEABLE"
 
     return {
         "close_time": close_time,
@@ -1229,6 +1236,13 @@ def get_closed_candle_data() -> Optional[Dict[str, Any]]:
         "wick_ratio": wick_ratio,
         "atr": atr14,
         "atr_avg": atr_avg,
+        "atr_current": atr14 if atr14 is not None else 0.0,
+        "atr_threshold": atr_threshold,
+        "volume_current": close_volume,
+        "volume_threshold": volume_threshold,
+        "volatility_current": volatility_score,
+        "volatility_threshold": volatility_threshold,
+        "final_regime_score": final_regime_score,
         "volume_score": volume_score,
         "highest_high": max(float(c[2]) for c in breakout_history),
         "lowest_low": min(float(c[3]) for c in breakout_history),
@@ -1997,6 +2011,17 @@ while True:
 
         last_market_state = candle["market_state"]
         log_event(f"[MARKET] {last_market_state}")
+        if last_market_state == "LOW_ACTIVITY":
+            log_event(
+                "[LOW_ACTIVITY_CALC] "
+                f"atr_current={float(candle['atr_current']):.10f} "
+                f"atr_threshold={float(candle['atr_threshold']):.10f} "
+                f"volume_current={float(candle['volume_current']):.10f} "
+                f"volume_threshold={float(candle['volume_threshold']):.10f} "
+                f"volatility_current={float(candle['volatility_current']):.10f} "
+                f"volatility_threshold={float(candle['volatility_threshold']):.10f} "
+                f"final_regime_score={float(candle['final_regime_score']):.10f}"
+            )
 
         trend, ema50, ema200 = get_trend_state()
         long_breakout = candle["close_price"] > candle["highest_high"] * MICRO_BREAKOUT_FACTOR
