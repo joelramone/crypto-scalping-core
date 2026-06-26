@@ -64,6 +64,23 @@ Paper trading local:
 python -m app.main --paper --steps 20
 ```
 
+
+## 📚 V2 research: datos históricos y backtesting
+
+Descargar velas históricas OHLCV de Binance USD-M Futures para investigación:
+
+```bash
+python -m app.research.download_data --symbol BTCUSDT --interval 1m --start 2025-01-01 --end 2026-01-01 --output data/BTCUSDT_1m.csv
+```
+
+El comando crea la carpeta `data/` si no existe y guarda un CSV compatible con el backtester V2. Los CSV descargados en `data/*.csv` quedan ignorados por Git para evitar commitear datasets pesados o generados localmente.
+
+Ejecutar backtest sobre el CSV descargado:
+
+```bash
+python -m app.research.backtester --data data/BTCUSDT_1m.csv --strategy breakout
+```
+
 ## 🤖 Flujo de agentes
 
 1. `MarketStream` emite ticks simulados.
