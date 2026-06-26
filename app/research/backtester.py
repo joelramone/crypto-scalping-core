@@ -9,7 +9,13 @@ import pandas as pd
 from types import SimpleNamespace
 from app.research.config import ResearchBacktestConfig
 from app.research.features import add_basic_features
-from app.research.results import BacktestSummary, TradeResult, summarize_trades
+from app.research.results import (
+    BacktestSummary,
+    CandidateSignalEvaluation,
+    TradeResult,
+    summarize_candidate_signals,
+    summarize_trades,
+)
 from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
 
@@ -23,6 +29,9 @@ class HistoricalBacktester:
 
     def run(self) -> BacktestSummary:
         candles = add_basic_features(load_ohlcv_csv(self.config.data_path, self.config.timestamp_column))
+        candidate_evaluations = self._evaluate_candidate_signals(candles)
+        self._save_candidate_evaluations(candidate_evaluations)
+
         trades: list[TradeResult] = []
         index = max(self.config.warmup_bars, 1)
         while index < len(candles) - 1:
@@ -36,7 +45,110 @@ class HistoricalBacktester:
                 continue
             trades.append(trade)
             index = max(trade.exit_index + 1, index + 1)
-        return summarize_trades(trades)
+        return summarize_trades(trades, summarize_candidate_signals(candidate_evaluations))
+
+    def _evaluate_candidate_signals(self, candles: pd.DataFrame) -> list[CandidateSignalEvaluation]:
+        evaluations: list[CandidateSignalEvaluation] = []
+        for index in range(len(candles)):
+            history = candles.iloc[: index + 1]
+            signal = self._generate_signal(history)
+            rejection_reasons = self._consume_rejection_reasons(signal)
+            candle = candles.iloc[index]
+            close = float(candle["close"])
+            side = str(signal.get("side", "NONE")) if signal is not None else "NONE"
+            evaluations.append(
+                CandidateSignalEvaluation(
+                    timestamp=self._timestamp_for_candle(candle, index),
+                    close=close,
+                    regime=str(signal.get("regime") or "UNKNOWN") if signal is not None else "UNKNOWN",
+                    signal_side=side,
+                    signal_detected=signal is not None,
+                    accepted=signal is not None,
+                    rejection_reasons=rejection_reasons,
+                    score=float(signal.get("signal_quality_score", 0.0)) if signal is not None else self._last_rejection_score(),
+                    atr=self._optional_float(candle.get("atr")),
+                    rsi=self._optional_float(candle.get("rsi")),
+                    ema20=self._optional_float(candle.get("ema_20")),
+                    ema50=self._optional_float(candle.get("ema_50")),
+                    ema200=self._optional_float(candle.get("ema_200")),
+                    ema_slope=self._optional_float(candle.get("ema_slope")),
+                    volume_ratio=self._optional_float(candle.get("volume_ratio")),
+                    volatility=self._optional_float(candle.get("volatility")),
+                    distance_from_ema20=self._optional_float(candle.get("distance_from_ema20")),
+                    distance_from_ema200=self._optional_float(candle.get("distance_from_ema200")),
+                    future_return_5m=self._future_return(candles, index, 5),
+                    future_return_10m=self._future_return(candles, index, 10),
+                    future_return_15m=self._future_return(candles, index, 15),
+                    future_max_up_15m=self._future_max_up(candles, index, 15),
+                    future_max_down_15m=self._future_max_down(candles, index, 15),
+                )
+            )
+        return evaluations
+
+    def _save_candidate_evaluations(self, evaluations: list[CandidateSignalEvaluation]) -> None:
+        output_path = Path("runtime/research/candidate_signals.csv")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([evaluation.model_dump() for evaluation in evaluations]).to_csv(output_path, index=False)
+
+    def _consume_rejection_reasons(self, signal: dict[str, Any] | None) -> list[str]:
+        consumer = getattr(self.strategy, "consume_last_rejection_event", None)
+        event = consumer() if callable(consumer) else None
+        self._last_candidate_rejection_score = float(event.score) if event is not None and event.score is not None else 0.0
+        if signal is not None:
+            return []
+        if event is not None and event.reasons:
+            return event.reasons
+        return ["no_signal"]
+
+    def _last_rejection_score(self) -> float:
+        return float(getattr(self, "_last_candidate_rejection_score", 0.0))
+
+    def _timestamp_for_candle(self, candle: pd.Series, index: int) -> str:
+        if self.config.timestamp_column in candle and pd.notna(candle[self.config.timestamp_column]):
+            value = candle[self.config.timestamp_column]
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            return str(value)
+        return str(index)
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _future_return(candles: pd.DataFrame, index: int, bars: int) -> float | None:
+        future_index = index + bars
+        if future_index >= len(candles):
+            return None
+        close = float(candles.iloc[index]["close"])
+        if close == 0.0:
+            return None
+        future_close = float(candles.iloc[future_index]["close"])
+        return (future_close - close) / close
+
+    @staticmethod
+    def _future_max_up(candles: pd.DataFrame, index: int, bars: int) -> float | None:
+        last_index = min(index + bars, len(candles) - 1)
+        if last_index <= index:
+            return None
+        close = float(candles.iloc[index]["close"])
+        if close == 0.0:
+            return None
+        future_high = float(candles.iloc[index + 1 : last_index + 1]["high"].max())
+        return (future_high - close) / close
+
+    @staticmethod
+    def _future_max_down(candles: pd.DataFrame, index: int, bars: int) -> float | None:
+        last_index = min(index + bars, len(candles) - 1)
+        if last_index <= index:
+            return None
+        close = float(candles.iloc[index]["close"])
+        if close == 0.0:
+            return None
+        future_low = float(candles.iloc[index + 1 : last_index + 1]["low"].min())
+        return (future_low - close) / close
 
     def _generate_signal(self, history: pd.DataFrame) -> dict[str, Any] | None:
         data = {column: history[column].dropna().tolist() for column in history.columns}
