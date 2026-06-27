@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 BINANCE_FUTURES_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 MAX_LIMIT = 1500
-DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_RETRIES = 3
+DEFAULT_TIMEOUT_SECONDS = 30
 REQUEST_SLEEP_SECONDS = 0.2
 
 INTERVAL_TO_MS: dict[str, int] = {
@@ -50,7 +50,7 @@ CSV_COLUMNS = [
 ]
 
 
-class HistoricalDataDownloadConfig(BaseModel):
+class DownloadConfig(BaseModel):
     symbol: str = Field(min_length=1)
     interval: str
     start: str = Field(min_length=1)
@@ -73,7 +73,7 @@ class HistoricalDataDownloadConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_date_range(self) -> HistoricalDataDownloadConfig:
+    def validate_date_range(self) -> DownloadConfig:
         if parse_datetime_to_utc_ms(self.end) <= parse_datetime_to_utc_ms(self.start):
             raise ValueError("--end must be later than --start")
         return self
@@ -83,18 +83,21 @@ def parse_datetime_to_utc_ms(value: str) -> int:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(f"Invalid ISO date/datetime '{value}'. Example: 2025-01-01 or 2025-01-01T00:00:00+00:00") from exc
+        raise ValueError(
+            f"Invalid ISO date/datetime '{value}'. Example: 2025-01-01 or 2025-01-01T00:00:00+00:00"
+        ) from exc
 
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     else:
         parsed = parsed.astimezone(timezone.utc)
+
     return int(parsed.timestamp() * 1000)
 
 
 def fetch_klines_page(
     session: requests.Session,
-    config: HistoricalDataDownloadConfig,
+    config: DownloadConfig,
     start_time_ms: int,
     end_time_ms: int,
 ) -> list[list[Any]]:
@@ -117,7 +120,7 @@ def fetch_klines_page(
             return payload
         except (requests.RequestException, ValueError) as exc:
             last_error = exc
-            if attempt == config.retries:
+            if attempt >= config.retries:
                 break
             sleep_seconds = min(2 ** (attempt - 1), 8)
             logging.warning("Binance request failed on attempt %s/%s: %s", attempt, config.retries, exc)
@@ -154,7 +157,7 @@ def rows_to_dataframe(rows: list[list[Any]]) -> pd.DataFrame:
     return dataframe
 
 
-def download_binance_futures_klines(config: HistoricalDataDownloadConfig) -> pd.DataFrame:
+def download_binance_futures_klines(config: DownloadConfig) -> pd.DataFrame:
     start_time_ms = parse_datetime_to_utc_ms(config.start)
     end_time_ms = parse_datetime_to_utc_ms(config.end) - 1
     interval_ms = INTERVAL_TO_MS[config.interval]
@@ -171,11 +174,12 @@ def download_binance_futures_klines(config: HistoricalDataDownloadConfig) -> pd.
             last_open_time_ms = int(page[-1][0])
             next_start_ms = last_open_time_ms + interval_ms
             if next_start_ms <= current_start_ms:
-                break
-            current_start_ms = next_start_ms
+                raise RuntimeError("Binance pagination did not advance")
 
+            current_start_ms = next_start_ms
             if len(page) < MAX_LIMIT:
                 break
+
             time.sleep(REQUEST_SLEEP_SECONDS)
 
     dataframe = rows_to_dataframe(rows)
@@ -185,7 +189,7 @@ def download_binance_futures_klines(config: HistoricalDataDownloadConfig) -> pd.
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Download Binance USD-M Futures OHLCV candles for V2 research backtests.")
+    parser = argparse.ArgumentParser(description="Download Binance USD-M Futures klines into CSV.")
     parser.add_argument("--symbol", required=True, help="Binance Futures symbol, for example BTCUSDT.")
     parser.add_argument("--interval", required=True, help="Kline interval, for example 1m, 5m, 1h, or 1d.")
     parser.add_argument("--start", required=True, help="Inclusive UTC start date or datetime, for example 2025-01-01.")
@@ -198,7 +202,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     args = build_arg_parser().parse_args()
-    config = HistoricalDataDownloadConfig(
+    config = DownloadConfig(
         symbol=args.symbol,
         interval=args.interval,
         start=args.start,
@@ -206,11 +210,13 @@ def main() -> None:
         output=args.output,
         retries=args.retries,
     )
+
     try:
         dataframe = download_binance_futures_klines(config)
     except (RuntimeError, ValueError, requests.RequestException) as exc:
         logging.error("Failed to download Binance Futures klines: %s", exc)
         raise SystemExit(1) from exc
+
     logging.info("Downloaded %s candles to %s", len(dataframe), config.output)
 
 
