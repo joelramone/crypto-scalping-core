@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from app.research.config import ResearchBacktestConfig
 from app.research.features import add_basic_features
 from app.research.results import (
+    BacktestCliOutput,
     BacktestSummary,
     CandidateSignalEvaluation,
     TradeResult,
@@ -18,6 +19,14 @@ from app.research.results import (
 )
 from app.strategies.breakout_trend import BreakoutTrendStrategy
 from app.strategies.rsi_mean_reversion import RSIMeanReversionStrategy
+
+
+RESEARCH_LAYER_FILES = [
+    "app/research/backtester.py",
+    "app/research/features.py",
+    "app/research/results.py",
+    "app/research/config.py",
+]
 
 
 class HistoricalBacktester:
@@ -268,7 +277,12 @@ def main() -> None:
         max_holding_bars=args.max_holding_bars,
     )
     summary = HistoricalBacktester(config).run()
-    print(summary.model_dump_json(indent=2, exclude={"trades"}))
+    print(
+        BacktestCliOutput(
+            affected_files=RESEARCH_LAYER_FILES,
+            summary=summary,
+        ).model_dump_json(indent=2, exclude={"summary": {"trades"}})
+    )
 
 
 if __name__ == "__main__":

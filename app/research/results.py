@@ -71,6 +71,11 @@ class BacktestSummary(BaseModel):
     trades: list[TradeResult] = Field(default_factory=list)
 
 
+class BacktestCliOutput(BaseModel):
+    affected_files: list[str]
+    summary: BacktestSummary
+
+
 def summarize_candidate_signals(evaluations: list[CandidateSignalEvaluation]) -> CandidateSignalSummary:
     accepted = [evaluation for evaluation in evaluations if evaluation.accepted]
     rejected = [evaluation for evaluation in evaluations if not evaluation.accepted]
