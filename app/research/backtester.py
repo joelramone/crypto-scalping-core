@@ -2,10 +2,12 @@
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from app.research.config import DEFAULT_DATA_PATH
+from app.research.features import FEATURE_COLUMNS, compute_features
 from app.research.results import print_dataset_summary
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
@@ -39,13 +41,39 @@ def load_ohlcv_csv(data_path: str | Path) -> pd.DataFrame:
     return df
 
 
+def drop_indicator_warmup_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows with NaN values introduced by indicator warmup periods."""
+    return df.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
+
+
+def format_feature_value(value: Any) -> str:
+    """Format feature values for compact command-line output."""
+    if isinstance(value, float):
+        return f"{value:.10g}"
+    return str(value)
+
+
+def print_feature_summary(df: pd.DataFrame) -> None:
+    """Print a summary of calculated technical features."""
+    last_row = df.iloc[-1]
+
+    print(f"Total rows after features: {len(df)}")
+    print(f"Feature columns created: {', '.join(FEATURE_COLUMNS)}")
+    print("Last row feature values:")
+    for column in FEATURE_COLUMNS:
+        print(f"  {column}: {format_feature_value(last_row[column])}")
+
+
 def main() -> None:
     """Run the research backtester entry point."""
     args = parse_args()
     df = load_ohlcv_csv(args.data)
+    featured_df = compute_features(df)
+    featured_df = drop_indicator_warmup_rows(featured_df)
 
     print("Research backtester initialized")
     print_dataset_summary(df, args.data)
+    print_feature_summary(featured_df)
 
 
 if __name__ == "__main__":
