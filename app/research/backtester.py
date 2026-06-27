@@ -8,7 +8,8 @@ import pandas as pd
 
 from app.research.config import DEFAULT_DATA_PATH
 from app.research.features import FEATURE_COLUMNS, compute_features
-from app.research.results import print_dataset_summary
+from app.research.simulation import simulate_long_only_baseline
+from app.research.results import print_backtest_metrics, print_dataset_summary
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
 NUMERIC_COLUMNS = ("open", "high", "low", "close", "volume")
@@ -74,6 +75,9 @@ def main() -> None:
     print("Research backtester initialized")
     print_dataset_summary(df, args.data)
     print_feature_summary(featured_df)
+
+    backtest_result = simulate_long_only_baseline(featured_df)
+    print_backtest_metrics(backtest_result.metrics)
 
 
 if __name__ == "__main__":
