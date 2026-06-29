@@ -8,11 +8,26 @@ import pandas as pd
 
 from app.research.config import DEFAULT_DATA_PATH
 from app.research.features import FEATURE_COLUMNS, compute_features
-from app.research.simulation import simulate_long_only_baseline
 from app.research.results import print_backtest_metrics, print_dataset_summary
+from app.research.simulation import simulate_strategy
+from app.research.strategies import (
+    BaseStrategy,
+    BaselineTrendStrategy,
+    BollingerReversionStrategy,
+    DonchianBreakoutStrategy,
+    MeanReversionStrategy,
+    PullbackStrategy,
+)
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
 NUMERIC_COLUMNS = ("open", "high", "low", "close", "volume")
+STRATEGIES: dict[str, type[BaseStrategy]] = {
+    "baseline_trend": BaselineTrendStrategy,
+    "mean_reversion": MeanReversionStrategy,
+    "pullback": PullbackStrategy,
+    "bollinger_reversion": BollingerReversionStrategy,
+    "donchian_breakout": DonchianBreakoutStrategy,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         "--data",
         default=DEFAULT_DATA_PATH,
         help="Path to an OHLCV CSV file.",
+    )
+    parser.add_argument(
+        "--strategy",
+        default="baseline_trend",
+        choices=sorted(STRATEGIES),
+        help="Research strategy to run.",
     )
     return parser.parse_args()
 
@@ -65,9 +86,15 @@ def print_feature_summary(df: pd.DataFrame) -> None:
         print(f"  {column}: {format_feature_value(last_row[column])}")
 
 
+def load_strategy(strategy_key: str) -> BaseStrategy:
+    """Instantiate a configured research strategy by CLI key."""
+    return STRATEGIES[strategy_key]()
+
+
 def main() -> None:
     """Run the research backtester entry point."""
     args = parse_args()
+    strategy = load_strategy(args.strategy)
     df = load_ohlcv_csv(args.data)
     featured_df = compute_features(df)
     featured_df = drop_indicator_warmup_rows(featured_df)
@@ -76,8 +103,8 @@ def main() -> None:
     print_dataset_summary(df, args.data)
     print_feature_summary(featured_df)
 
-    backtest_result = simulate_long_only_baseline(featured_df)
-    print_backtest_metrics(backtest_result.metrics)
+    backtest_result = simulate_strategy(featured_df, strategy)
+    print_backtest_metrics(strategy.name(), backtest_result.metrics)
 
 
 if __name__ == "__main__":
