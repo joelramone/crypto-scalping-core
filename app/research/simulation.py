@@ -99,9 +99,12 @@ def simulate_strategy(
         entry_index = index
         entry_row = row
         entry_price = float(entry_row["close"])
-        take_profit_price = entry_price * (1.0 + TAKE_PROFIT_PCT)
-        stop_loss_price = entry_price * (1.0 - STOP_LOSS_PCT)
-        max_exit_index = min(entry_index + MAX_HOLDING_CANDLES, len(simulation_df) - 1)
+        take_profit_price = entry_price * (1.0 + strategy.take_profit_pct())
+        stop_loss_price = entry_price * (1.0 - strategy.stop_loss_pct())
+        max_exit_index = min(
+            entry_index + strategy.max_holding_candles(),
+            len(simulation_df) - 1,
+        )
 
         exit_index = max_exit_index
         exit_price = float(simulation_df.iloc[exit_index]["close"])
