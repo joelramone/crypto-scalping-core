@@ -9,14 +9,14 @@ import pandas as pd
 from pydantic import BaseModel, Field, computed_field
 
 from app.research.config import DEFAULT_FEE_RATE
+from app.research.strategies.base import BaseStrategy
 
 TAKE_PROFIT_PCT = 0.004
 STOP_LOSS_PCT = 0.0025
 MAX_HOLDING_CANDLES = 30
 FIXED_NOTIONAL_USDT = 100.0
-ATR_MEDIAN_WINDOW = 200
 
-ExitReason = Literal["take_profit", "stop_loss", "max_holding"]
+ExitReason = Literal["take_profit", "stop_loss", "strategy_exit", "max_holding"]
 
 
 class BacktestTrade(BaseModel):
@@ -69,28 +69,22 @@ class BacktestResult(BaseModel):
     metrics: BacktestMetrics
 
 
-def has_long_entry_signal(row: pd.Series) -> bool:
-    """Return True when the baseline long-only entry rules are met."""
-    return bool(
-        row["close"] > row["ema200"]
-        and row["ema20_slope"] > 0.0
-        and 45.0 <= row["rsi14"] <= 70.0
-        and row["volume_ratio"] > 1.2
-        and row["atr14"] > row["atr14_median"]
-    )
-
-
-def simulate_long_only_baseline(
+def simulate_strategy(
     df: pd.DataFrame,
+    strategy: BaseStrategy,
     fee_rate: float = DEFAULT_FEE_RATE,
     fixed_notional: float = FIXED_NOTIONAL_USDT,
 ) -> BacktestResult:
-    """Run the first explicit long-only research baseline on featured candles."""
+    """Run a long-only research strategy on featured candles."""
     simulation_df = df.copy()
-    simulation_df["atr14_median"] = simulation_df["atr14"].rolling(
-        window=ATR_MEDIAN_WINDOW,
-        min_periods=1,
-    ).median()
+    entry_signals = strategy.generate_entries(simulation_df).reindex(
+        simulation_df.index,
+        fill_value=False,
+    )
+    exit_signals = strategy.generate_exits(simulation_df).reindex(
+        simulation_df.index,
+        fill_value=False,
+    )
 
     trades: list[BacktestTrade] = []
     index = 0
@@ -98,7 +92,7 @@ def simulate_long_only_baseline(
 
     while index <= last_entry_index:
         row = simulation_df.iloc[index]
-        if not has_long_entry_signal(row):
+        if not bool(entry_signals.iloc[index]):
             index += 1
             continue
 
@@ -124,6 +118,11 @@ def simulate_long_only_baseline(
                 exit_index = candidate_index
                 exit_price = take_profit_price
                 exit_reason = "take_profit"
+                break
+            if bool(exit_signals.iloc[candidate_index]):
+                exit_index = candidate_index
+                exit_price = float(candidate["close"])
+                exit_reason = "strategy_exit"
                 break
 
         quantity = fixed_notional / entry_price
@@ -172,10 +171,18 @@ def calculate_metrics(trades: list[BacktestTrade]) -> BacktestMetrics:
         gross_pnl=gross_pnl,
         estimated_fees=estimated_fees,
         net_pnl=net_pnl,
-        profit_factor=(gross_profit / gross_loss) if gross_loss else (inf if gross_profit > 0.0 else 0.0),
+        profit_factor=(
+            (gross_profit / gross_loss)
+            if gross_loss
+            else (inf if gross_profit > 0.0 else 0.0)
+        ),
         expectancy=(net_pnl / total_trades) if total_trades else 0.0,
         average_win=(gross_profit / len(winning_trades)) if winning_trades else 0.0,
-        average_loss=(sum(trade.net_pnl for trade in losing_trades) / len(losing_trades)) if losing_trades else 0.0,
+        average_loss=(
+            (sum(trade.net_pnl for trade in losing_trades) / len(losing_trades))
+            if losing_trades
+            else 0.0
+        ),
         max_drawdown=calculate_max_drawdown(trades),
     )
 

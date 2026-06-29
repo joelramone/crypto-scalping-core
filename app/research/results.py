@@ -17,18 +17,12 @@ def print_dataset_summary(df: pd.DataFrame, data_path: str | Path) -> None:
     print(f"Last close: {df['close'].iloc[-1]}")
 
 
-def print_backtest_metrics(metrics: BacktestMetrics) -> None:
-    """Print simple rule-based backtest metrics."""
+def print_backtest_metrics(strategy_name: str, metrics: BacktestMetrics) -> None:
+    """Print strategy comparison backtest metrics."""
     print("Backtest metrics:")
-    print(f"  total trades: {metrics.total_trades}")
-    print(f"  wins: {metrics.wins}")
-    print(f"  losses: {metrics.losses}")
-    print(f"  win rate: {metrics.win_rate:.2%}")
-    print(f"  gross pnl: {metrics.gross_pnl:.4f} USDT")
-    print(f"  estimated fees: {metrics.estimated_fees:.4f} USDT")
-    print(f"  net pnl: {metrics.net_pnl:.4f} USDT")
-    print(f"  profit factor: {metrics.profit_factor:.4f}")
-    print(f"  expectancy: {metrics.expectancy:.4f} USDT")
-    print(f"  average win: {metrics.average_win:.4f} USDT")
-    print(f"  average loss: {metrics.average_loss:.4f} USDT")
-    print(f"  max drawdown: {metrics.max_drawdown:.4f} USDT")
+    print(f"  Strategy Name: {strategy_name}")
+    print(f"  Total Trades: {metrics.total_trades}")
+    print(f"  Win Rate: {metrics.win_rate:.2%}")
+    print(f"  Profit Factor: {metrics.profit_factor:.4f}")
+    print(f"  Expectancy: {metrics.expectancy:.4f} USDT")
+    print(f"  Max Drawdown: {metrics.max_drawdown:.4f} USDT")
