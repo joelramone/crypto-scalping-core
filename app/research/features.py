@@ -12,6 +12,11 @@ FEATURE_COLUMNS = (
     "ema50",
     "ema200",
     "ema20_slope",
+    "bb_mid",
+    "bb_std",
+    "bb_upper",
+    "bb_lower",
+    "bb_width",
     "volume_sma20",
     "volume_ratio",
     "volatility_20",
@@ -61,6 +66,12 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     features["ema50"] = close.ewm(span=50, adjust=False, min_periods=50).mean()
     features["ema200"] = close.ewm(span=200, adjust=False, min_periods=200).mean()
     features["ema20_slope"] = features["ema20"].diff()
+
+    features["bb_mid"] = close.rolling(window=20, min_periods=20).mean()
+    features["bb_std"] = close.rolling(window=20, min_periods=20).std()
+    features["bb_upper"] = features["bb_mid"] + 2.0 * features["bb_std"]
+    features["bb_lower"] = features["bb_mid"] - 2.0 * features["bb_std"]
+    features["bb_width"] = (features["bb_upper"] - features["bb_lower"]) / close
 
     features["volume_sma20"] = volume.rolling(window=20, min_periods=20).mean()
     features["volume_ratio"] = volume / features["volume_sma20"]
