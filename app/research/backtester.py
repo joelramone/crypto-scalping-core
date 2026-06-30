@@ -15,6 +15,7 @@ from app.research.strategies import (
     BaselineTrendStrategy,
     BollingerReversionStrategy,
     DonchianBreakoutStrategy,
+    EmaPullbackStrategy,
     MeanReversionStrategy,
     PullbackStrategy,
 )
@@ -27,6 +28,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "pullback": PullbackStrategy,
     "bollinger_reversion": BollingerReversionStrategy,
     "donchian_breakout": DonchianBreakoutStrategy,
+    "ema_pullback": EmaPullbackStrategy,
 }
 
 
