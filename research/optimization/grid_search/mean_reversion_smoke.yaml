@@ -1,0 +1,30 @@
+strategy: mean_reversion
+data: data/BTCUSDT_1m.csv
+output: research/leaderboards/mean_reversion_smoke_v1.csv
+
+min_trades: 100
+
+parameters:
+  rsi_threshold:
+    - 25
+    - 30
+    - 35
+
+  distance_from_ema20:
+    - -0.0015
+    - -0.002
+
+  volume_ratio:
+    - 0.8
+    - 1.0
+
+  take_profit_pct:
+    - 0.0025
+    - 0.003
+
+  stop_loss_pct:
+    - 0.002
+
+  max_holding_candles:
+    - 15
+    - 20

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,16 @@ PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
 }
 
 
+class GridSearchConfig(BaseModel):
+    """YAML-backed optimizer experiment configuration."""
+
+    strategy: str
+    data: Path
+    output: Path
+    min_trades: int = Field(default=MIN_TRADES, ge=0)
+    parameters: dict[str, list[Any]] = Field(min_length=1)
+
+
 class GridSearchResult(BaseModel):
     """Completed optimizer evaluation for one parameter combination."""
 
@@ -77,8 +88,10 @@ def run_grid_search(
     """Run a strategy over every parameter combination and rank passing results."""
     all_results: list[GridSearchResult] = []
     parameter_combinations = expand_parameter_grid(parameter_grid)
+    total_combinations = len(parameter_combinations)
 
-    for parameters in parameter_combinations:
+    for index, parameters in enumerate(parameter_combinations, start=1):
+        print(f"Progress: {index}/{total_combinations}")
         strategy = strategy_class(**parameters)
         metrics = simulate_strategy(df, strategy).metrics
         if metrics.total_trades < min_trades:
@@ -100,7 +113,7 @@ def run_grid_search(
 
     return GridSearchSummary(
         strategy=strategy_key,
-        evaluated_configurations=len(parameter_combinations),
+        evaluated_configurations=total_combinations,
         ranked_results=all_results,
         leaderboard_rows=leaderboard_rows,
     )
@@ -110,22 +123,112 @@ def parse_args() -> argparse.Namespace:
     """Parse optimizer command-line arguments."""
     parser = argparse.ArgumentParser(description="Run a research strategy grid search.")
     parser.add_argument(
+        "--config",
+        help="Path to a YAML experiment config. Overrides strategy, data, output, and params.",
+    )
+    parser.add_argument(
         "--strategy",
-        required=True,
         choices=sorted(OPTIMIZER_STRATEGIES),
         help="Research strategy to optimize.",
     )
     parser.add_argument(
         "--data",
-        required=True,
         help="Path to an OHLCV CSV file.",
     )
     parser.add_argument(
         "--output",
-        required=True,
         help="Path for the leaderboard CSV output.",
     )
     return parser.parse_args()
+
+
+def _parse_scalar(value: str) -> Any:
+    """Parse a minimal YAML scalar used by optimizer configs."""
+    value = value.strip()
+    if value == "":
+        return ""
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value.strip('"\'')
+
+
+def _load_simple_yaml_config(config_path: Path) -> dict[str, Any]:
+    """Load the small mapping/list YAML shape used for optimizer configs."""
+    config: dict[str, Any] = {}
+    parameters: dict[str, list[Any]] = {}
+    current_parameter: str | None = None
+    in_parameters = False
+
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line_without_comment = raw_line.split("#", 1)[0].rstrip()
+        if not line_without_comment.strip():
+            continue
+        stripped = line_without_comment.strip()
+        indent = len(line_without_comment) - len(line_without_comment.lstrip(" "))
+
+        if indent == 0:
+            key, separator, value = stripped.partition(":")
+            if not separator:
+                raise ValueError(f"Invalid YAML line: {raw_line}")
+            in_parameters = key == "parameters"
+            current_parameter = None
+            if in_parameters:
+                config["parameters"] = parameters
+            else:
+                config[key] = _parse_scalar(value)
+            continue
+
+        if in_parameters and indent == 2 and stripped.endswith(":"):
+            current_parameter = stripped[:-1]
+            parameters[current_parameter] = []
+            continue
+
+        if in_parameters and indent == 4 and stripped.startswith("- ") and current_parameter:
+            parameters[current_parameter].append(_parse_scalar(stripped[2:]))
+            continue
+
+        raise ValueError(f"Unsupported YAML shape near line: {raw_line}")
+
+    return config
+
+
+def load_grid_search_config(config_path: str | Path) -> GridSearchConfig:
+    """Load an optimizer experiment config from YAML."""
+    path = Path(config_path)
+    yaml_spec = importlib.util.find_spec("yaml")
+    if yaml_spec is not None:
+        import yaml
+
+        loaded_config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    else:
+        loaded_config = _load_simple_yaml_config(path)
+    if not isinstance(loaded_config, dict):
+        raise ValueError(f"Config must be a YAML mapping: {path}")
+    return GridSearchConfig.model_validate(loaded_config)
+
+
+def build_config_from_args(args: argparse.Namespace) -> GridSearchConfig:
+    """Resolve CLI arguments into a single optimizer configuration."""
+    if args.config:
+        return load_grid_search_config(args.config)
+
+    missing_args = [name for name in ("strategy", "data", "output") if getattr(args, name) is None]
+    if missing_args:
+        missing = ", ".join(f"--{name}" for name in missing_args)
+        raise SystemExit(f"Missing required arguments without --config: {missing}")
+
+    return GridSearchConfig(
+        strategy=args.strategy,
+        data=Path(args.data),
+        output=Path(args.output),
+        min_trades=MIN_TRADES,
+        parameters=PARAMETER_GRIDS[args.strategy],
+    )
 
 
 def load_featured_data(data_path: str | Path) -> pd.DataFrame:
@@ -138,23 +241,34 @@ def load_featured_data(data_path: str | Path) -> pd.DataFrame:
 def main() -> None:
     """Run the grid-search optimizer CLI."""
     args = parse_args()
-    featured_df = load_featured_data(args.data)
-    strategy_class = OPTIMIZER_STRATEGIES[args.strategy]
-    parameter_grid = PARAMETER_GRIDS[args.strategy]
+    config = build_config_from_args(args)
+    if config.strategy not in OPTIMIZER_STRATEGIES:
+        valid_strategies = ", ".join(sorted(OPTIMIZER_STRATEGIES))
+        raise SystemExit(f"Unsupported strategy '{config.strategy}'. Valid choices: {valid_strategies}")
+
+    parameter_combinations = expand_parameter_grid(config.parameters)
+    print(f"Strategy: {config.strategy}")
+    print(f"Data path: {config.data}")
+    print(f"Output path: {config.output}")
+    print(f"Parameter combinations: {len(parameter_combinations)}")
+
+    featured_df = load_featured_data(config.data)
+    strategy_class = OPTIMIZER_STRATEGIES[config.strategy]
 
     summary = run_grid_search(
         df=featured_df,
-        strategy_key=args.strategy,
+        strategy_key=config.strategy,
         strategy_class=strategy_class,
-        parameter_grid=parameter_grid,
+        parameter_grid=config.parameters,
+        min_trades=config.min_trades,
     )
 
-    write_leaderboard_csv(summary.leaderboard_rows, args.output)
+    write_leaderboard_csv(summary.leaderboard_rows, config.output)
     print(
         f"Evaluated {summary.evaluated_configurations} configurations for "
-        f"{args.strategy}."
+        f"{config.strategy}."
     )
-    print(f"Wrote leaderboard: {args.output}")
+    print(f"Wrote leaderboard: {config.output}")
     print_top_results(summary.leaderboard_rows, limit=10)
 
 
