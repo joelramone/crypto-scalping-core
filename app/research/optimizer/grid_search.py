@@ -20,9 +20,18 @@ from app.research.optimizer.leaderboard import (
     write_leaderboard_csv,
 )
 from app.research.simulation import BacktestMetrics, simulate_strategy
-from app.research.strategies import BaseStrategy, MeanReversionStrategy
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
 
 MIN_TRADES = 100
+
+BOLLINGER_REVERSION_GRID: dict[str, list[Any]] = {
+    "rsi_threshold": [25, 30, 35],
+    "volume_ratio": [0.5, 0.7, 0.9],
+    "bb_std_multiplier": [1.5, 2.0, 2.5],
+    "take_profit_pct": [0.0025, 0.003, 0.004],
+    "stop_loss_pct": [0.0015, 0.002, 0.0025],
+    "max_holding_candles": [15, 20, 30],
+}
 
 MEAN_REVERSION_GRID: dict[str, list[Any]] = {
     "rsi_threshold": [20, 25, 30, 35, 40],
@@ -33,11 +42,63 @@ MEAN_REVERSION_GRID: dict[str, list[Any]] = {
     "max_holding_candles": [10, 15, 20, 30],
 }
 
+
+class OptimizerBollingerReversionStrategy(BollingerReversionStrategy):
+    """Optimizer-compatible Bollinger Reversion strategy with tunable parameters."""
+
+    def __init__(
+        self,
+        rsi_threshold: float = 35.0,
+        volume_ratio: float = 0.7,
+        bb_std_multiplier: float = 2.0,
+        take_profit_pct: float = 0.003,
+        stop_loss_pct: float = 0.002,
+        max_holding_candles: int = 25,
+    ) -> None:
+        self.rsi_threshold = rsi_threshold
+        self.volume_ratio = volume_ratio
+        self.bb_std_multiplier = bb_std_multiplier
+        self._take_profit_pct = take_profit_pct
+        self._stop_loss_pct = stop_loss_pct
+        self._max_holding_candles = max_holding_candles
+
+    def generate_entries(self, df: pd.DataFrame) -> pd.Series:
+        """Return Bollinger Reversion long-only entry signals using optimizer parameters."""
+        strategy_df = df.copy()
+        strategy_df["atr14_median"] = strategy_df["atr14"].rolling(
+            window=200,
+            min_periods=1,
+        ).median()
+        dynamic_bb_lower = strategy_df["bb_mid"] - (
+            self.bb_std_multiplier * strategy_df["bb_std"]
+        )
+
+        return (
+            (strategy_df["close"] < dynamic_bb_lower)
+            & (strategy_df["rsi14"] < self.rsi_threshold)
+            & (strategy_df["volume_ratio"] > self.volume_ratio)
+            & (strategy_df["atr14"] > strategy_df["atr14_median"])
+        )
+
+    def take_profit_pct(self) -> float:
+        """Return the optimizer-configured take-profit percentage."""
+        return self._take_profit_pct
+
+    def stop_loss_pct(self) -> float:
+        """Return the optimizer-configured stop-loss percentage."""
+        return self._stop_loss_pct
+
+    def max_holding_candles(self) -> int:
+        """Return the optimizer-configured maximum holding time in candles."""
+        return self._max_holding_candles
+
 OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
+    "bollinger_reversion": OptimizerBollingerReversionStrategy,
     "mean_reversion": MeanReversionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
+    "bollinger_reversion": BOLLINGER_REVERSION_GRID,
     "mean_reversion": MEAN_REVERSION_GRID,
 }
 

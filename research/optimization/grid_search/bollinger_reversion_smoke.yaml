@@ -1,0 +1,36 @@
+strategy: bollinger_reversion
+data: data/BTCUSDT_1m.csv
+output: research/leaderboards/bollinger_reversion_smoke_v1.csv
+
+min_trades: 100
+
+parameters:
+  rsi_threshold:
+    - 25
+    - 30
+    - 35
+
+  volume_ratio:
+    - 0.5
+    - 0.7
+    - 0.9
+
+  bb_std_multiplier:
+    - 1.5
+    - 2.0
+    - 2.5
+
+  take_profit_pct:
+    - 0.0025
+    - 0.003
+    - 0.004
+
+  stop_loss_pct:
+    - 0.0015
+    - 0.002
+    - 0.0025
+
+  max_holding_candles:
+    - 15
+    - 20
+    - 30

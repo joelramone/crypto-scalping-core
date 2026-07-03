@@ -23,6 +23,7 @@ LEADERBOARD_COLUMNS = [
     "rsi_threshold",
     "distance_from_ema20",
     "volume_ratio",
+    "bb_std_multiplier",
     "take_profit_pct",
     "stop_loss_pct",
     "max_holding_candles",
