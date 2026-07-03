@@ -24,7 +24,7 @@ from app.research.strategies import BaseStrategy, MeanReversionStrategy
 MIN_TRADES = 100
 
 MEAN_REVERSION_GRID: dict[str, list[Any]] = {
-    "rsi_threshold": [20.0, 25.0, 30.0, 35.0, 40.0],
+    "rsi_threshold": [20, 25, 30, 35, 40],
     "distance_from_ema20": [-0.001, -0.0015, -0.002, -0.0025, -0.003],
     "volume_ratio": [0.5, 0.7, 0.8, 1.0, 1.2],
     "take_profit_pct": [0.002, 0.0025, 0.003, 0.004],
@@ -76,8 +76,9 @@ def run_grid_search(
 ) -> GridSearchSummary:
     """Run a strategy over every parameter combination and rank passing results."""
     all_results: list[GridSearchResult] = []
+    parameter_combinations = expand_parameter_grid(parameter_grid)
 
-    for parameters in expand_parameter_grid(parameter_grid):
+    for parameters in parameter_combinations:
         strategy = strategy_class(**parameters)
         metrics = simulate_strategy(df, strategy).metrics
         if metrics.total_trades < min_trades:
@@ -99,7 +100,7 @@ def run_grid_search(
 
     return GridSearchSummary(
         strategy=strategy_key,
-        evaluated_configurations=len(expand_parameter_grid(parameter_grid)),
+        evaluated_configurations=len(parameter_combinations),
         ranked_results=all_results,
         leaderboard_rows=leaderboard_rows,
     )
