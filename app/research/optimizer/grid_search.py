@@ -20,7 +20,44 @@ from app.research.optimizer.leaderboard import (
     write_leaderboard_csv,
 )
 from app.research.simulation import BacktestMetrics, simulate_strategy
+
+
+
+
+
+
+
+
+from app.research.strategies import (
+    BaseStrategy,
+    BollingerReversionStrategy,
+    DonchianBreakoutStrategy,
+    MeanReversionStrategy,
+)
+
 from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
+
+from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
+
 
 MIN_TRADES = 100
 
@@ -41,6 +78,38 @@ MEAN_REVERSION_GRID: dict[str, list[Any]] = {
     "stop_loss_pct": [0.0015, 0.002, 0.0025],
     "max_holding_candles": [10, 15, 20, 30],
 }
+
+
+
+
+
+
+
+
+
+DONCHIAN_BREAKOUT_GRID: dict[str, list[Any]] = {
+    "lookback": [10, 20, 30],
+    "volume_ratio": [1.0, 1.2, 1.5],
+    "take_profit_pct": [0.003, 0.004, 0.006],
+    "stop_loss_pct": [0.002, 0.0025, 0.003],
+    "max_holding_candles": [20, 30, 45],
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class OptimizerBollingerReversionStrategy(BollingerReversionStrategy):
@@ -94,11 +163,61 @@ class OptimizerBollingerReversionStrategy(BollingerReversionStrategy):
 
 OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "bollinger_reversion": OptimizerBollingerReversionStrategy,
+
+
+
+
+
+
+
+
+    "donchian_breakout": DonchianBreakoutStrategy,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "mean_reversion": MeanReversionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     "bollinger_reversion": BOLLINGER_REVERSION_GRID,
+
+
+
+
+
+
+
+
+    "donchian_breakout": DONCHIAN_BREAKOUT_GRID,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "mean_reversion": MEAN_REVERSION_GRID,
 }
 

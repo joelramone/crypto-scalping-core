@@ -17,6 +17,9 @@ FEATURE_COLUMNS = (
     "bb_upper",
     "bb_lower",
     "bb_width",
+    "donchian_high_20",
+    "donchian_low_20",
+    "donchian_width_20",
     "volume_sma20",
     "volume_ratio",
     "volatility_20",
@@ -72,6 +75,11 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     features["bb_upper"] = features["bb_mid"] + 2.0 * features["bb_std"]
     features["bb_lower"] = features["bb_mid"] - 2.0 * features["bb_std"]
     features["bb_width"] = (features["bb_upper"] - features["bb_lower"]) / close
+    features["donchian_high_20"] = high.rolling(window=20, min_periods=20).max().shift(1)
+    features["donchian_low_20"] = low.rolling(window=20, min_periods=20).min().shift(1)
+    features["donchian_width_20"] = (
+        features["donchian_high_20"] - features["donchian_low_20"]
+    ) / close
 
     features["volume_sma20"] = volume.rolling(window=20, min_periods=20).mean()
     features["volume_ratio"] = volume / features["volume_sma20"]
