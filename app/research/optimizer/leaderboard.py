@@ -20,6 +20,7 @@ LEADERBOARD_COLUMNS = [
     "max_drawdown",
     "gross_pnl",
     "net_pnl",
+    "lookback",
     "rsi_threshold",
     "distance_from_ema20",
     "volume_ratio",

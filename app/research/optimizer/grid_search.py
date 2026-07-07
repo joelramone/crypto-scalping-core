@@ -20,44 +20,12 @@ from app.research.optimizer.leaderboard import (
     write_leaderboard_csv,
 )
 from app.research.simulation import BacktestMetrics, simulate_strategy
-
-
-
-
-
-
-
-
 from app.research.strategies import (
     BaseStrategy,
     BollingerReversionStrategy,
     DonchianBreakoutStrategy,
     MeanReversionStrategy,
 )
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
-
-from app.research.strategies import BaseStrategy, BollingerReversionStrategy, MeanReversionStrategy
-
 
 MIN_TRADES = 100
 
@@ -79,14 +47,6 @@ MEAN_REVERSION_GRID: dict[str, list[Any]] = {
     "max_holding_candles": [10, 15, 20, 30],
 }
 
-
-
-
-
-
-
-
-
 DONCHIAN_BREAKOUT_GRID: dict[str, list[Any]] = {
     "lookback": [10, 20, 30],
     "volume_ratio": [1.0, 1.2, 1.5],
@@ -94,22 +54,6 @@ DONCHIAN_BREAKOUT_GRID: dict[str, list[Any]] = {
     "stop_loss_pct": [0.002, 0.0025, 0.003],
     "max_holding_candles": [20, 30, 45],
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class OptimizerBollingerReversionStrategy(BollingerReversionStrategy):
@@ -161,63 +105,16 @@ class OptimizerBollingerReversionStrategy(BollingerReversionStrategy):
         """Return the optimizer-configured maximum holding time in candles."""
         return self._max_holding_candles
 
+
 OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "bollinger_reversion": OptimizerBollingerReversionStrategy,
-
-
-
-
-
-
-
-
     "donchian_breakout": DonchianBreakoutStrategy,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     "mean_reversion": MeanReversionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     "bollinger_reversion": BOLLINGER_REVERSION_GRID,
-
-
-
-
-
-
-
-
     "donchian_breakout": DONCHIAN_BREAKOUT_GRID,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     "mean_reversion": MEAN_REVERSION_GRID,
 }
 
@@ -252,10 +149,10 @@ class GridSearchSummary(BaseModel):
 def expand_parameter_grid(parameter_grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
     """Expand a parameter grid into concrete parameter combinations."""
     parameter_names = list(parameter_grid)
-    combinations: list[dict[str, Any]] = []
-    for values in product(*(parameter_grid[name] for name in parameter_names)):
-        combinations.append(dict(zip(parameter_names, values, strict=True)))
-    return combinations
+    return [
+        dict(zip(parameter_names, values, strict=True))
+        for values in product(*(parameter_grid[name] for name in parameter_names))
+    ]
 
 
 def run_grid_search(
@@ -334,7 +231,7 @@ def _parse_scalar(value: str) -> Any:
     try:
         return float(value)
     except ValueError:
-        return value.strip('"\'')
+        return value.strip("\"'")
 
 
 def _load_simple_yaml_config(config_path: Path) -> dict[str, Any]:
