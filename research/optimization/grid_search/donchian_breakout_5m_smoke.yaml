@@ -1,0 +1,33 @@
+strategy: donchian_breakout
+data: data/BTCUSDT_1m.csv
+timeframe: 5m
+output: research/leaderboards/donchian_breakout_5m_smoke_v1.csv
+
+min_trades: 50
+
+parameters:
+  lookback:
+    - 10
+    - 20
+    - 30
+    - 50
+
+  volume_ratio:
+    - 0.8
+    - 1.0
+    - 1.2
+
+  take_profit_pct:
+    - 0.006
+    - 0.008
+    - 0.01
+
+  stop_loss_pct:
+    - 0.003
+    - 0.004
+    - 0.005
+
+  max_holding_candles:
+    - 12
+    - 24
+    - 36

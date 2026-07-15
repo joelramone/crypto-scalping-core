@@ -12,6 +12,7 @@ from app.research.simulation import BacktestMetrics
 
 LEADERBOARD_COLUMNS = [
     "strategy",
+    "timeframe",
     "rank",
     "total_trades",
     "win_rate",
@@ -28,6 +29,14 @@ LEADERBOARD_COLUMNS = [
     "take_profit_pct",
     "stop_loss_pct",
     "max_holding_candles",
+    "min_quality_score",
+    "min_body_to_range",
+    "min_close_location",
+    "min_range_expansion",
+    "min_atr_expansion",
+    "min_ema20_slope_pct",
+    "min_ema_alignment_strength",
+    "min_breakout_distance_pct",
 ]
 
 
@@ -35,6 +44,7 @@ class LeaderboardRow(BaseModel):
     """A ranked optimizer result row ready for CSV export."""
 
     strategy: str
+    timeframe: str
     rank: int = Field(ge=1)
     total_trades: int = Field(ge=0)
     win_rate: float
@@ -49,6 +59,7 @@ class LeaderboardRow(BaseModel):
         """Return a flat CSV row using the permanent leaderboard columns."""
         row: dict[str, Any] = {
             "strategy": self.strategy,
+            "timeframe": self.timeframe,
             "rank": self.rank,
             "total_trades": self.total_trades,
             "win_rate": self.win_rate,
@@ -66,6 +77,7 @@ class LeaderboardRow(BaseModel):
 
 def build_leaderboard_rows(
     strategy_name: str,
+    timeframe: str,
     ranked_results: list[tuple[dict[str, Any], BacktestMetrics]],
 ) -> list[LeaderboardRow]:
     """Convert ranked optimizer metrics into leaderboard rows."""
@@ -74,6 +86,7 @@ def build_leaderboard_rows(
         rows.append(
             LeaderboardRow(
                 strategy=strategy_name,
+                timeframe=timeframe,
                 rank=index,
                 total_trades=metrics.total_trades,
                 win_rate=metrics.win_rate,
@@ -112,7 +125,7 @@ def print_top_results(rows: list[LeaderboardRow], limit: int = 10) -> None:
             f"{key}={row.parameters[key]}" for key in LEADERBOARD_COLUMNS if key in row.parameters
         )
         print(
-            f"  #{row.rank} trades={row.total_trades} "
+            f"  #{row.rank} timeframe={row.timeframe} trades={row.total_trades} "
             f"win_rate={row.win_rate:.2%} "
             f"profit_factor={row.profit_factor:.4f} "
             f"expectancy={row.expectancy:.4f} "

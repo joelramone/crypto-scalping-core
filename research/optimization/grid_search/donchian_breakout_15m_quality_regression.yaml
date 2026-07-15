@@ -1,0 +1,46 @@
+strategy: donchian_breakout
+data: data/BTCUSDT_1m.csv
+timeframe: 15m
+output: research/leaderboards/donchian_breakout_15m_quality_regression.csv
+min_trades: 1
+
+parameters:
+  lookback:
+    - 3
+
+  volume_ratio:
+    - 0.4
+
+  take_profit_pct:
+    - 0.012
+
+  stop_loss_pct:
+    - 0.008
+
+  max_holding_candles:
+    - 24
+
+  min_quality_score:
+    - 0
+    - 5
+
+  min_body_to_range:
+    - 0.6
+
+  min_close_location:
+    - 0.7
+
+  min_range_expansion:
+    - 1.25
+
+  min_atr_expansion:
+    - 0.9
+
+  min_ema20_slope_pct:
+    - 0.0
+
+  min_ema_alignment_strength:
+    - 0.0
+
+  min_breakout_distance_pct:
+    - 0.0005

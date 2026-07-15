@@ -6,13 +6,15 @@ import argparse
 import importlib.util
 from itertools import product
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.research.backtester import drop_indicator_warmup_rows, load_ohlcv_csv
+from app.research.data_utils import SUPPORTED_INTERVALS, resample_ohlcv
 from app.research.features import compute_features
+from app.research.memory.experiment_writer import write_experiment_memory
 from app.research.optimizer.leaderboard import (
     LeaderboardRow,
     build_leaderboard_rows,
@@ -124,7 +126,9 @@ class GridSearchConfig(BaseModel):
 
     strategy: str
     data: Path
+    timeframe: Literal["1m", "5m", "15m"] = "1m"
     output: Path
+    config_file: Path | None = None
     min_trades: int = Field(default=MIN_TRADES, ge=0)
     parameters: dict[str, list[Any]] = Field(min_length=1)
 
@@ -141,6 +145,7 @@ class GridSearchSummary(BaseModel):
     """Full optimizer output before CSV persistence."""
 
     strategy: str
+    timeframe: str
     evaluated_configurations: int = Field(ge=0)
     ranked_results: list[GridSearchResult]
     leaderboard_rows: list[LeaderboardRow]
@@ -158,6 +163,7 @@ def expand_parameter_grid(parameter_grid: dict[str, list[Any]]) -> list[dict[str
 def run_grid_search(
     df: pd.DataFrame,
     strategy_key: str,
+    timeframe: str,
     strategy_class: type[BaseStrategy],
     parameter_grid: dict[str, list[Any]],
     min_trades: int = MIN_TRADES,
@@ -186,10 +192,11 @@ def run_grid_search(
         reverse=True,
     )
     ranked_pairs = [(result.parameters, result.metrics) for result in all_results]
-    leaderboard_rows = build_leaderboard_rows(strategy_key, ranked_pairs)
+    leaderboard_rows = build_leaderboard_rows(strategy_key, timeframe, ranked_pairs)
 
     return GridSearchSummary(
         strategy=strategy_key,
+        timeframe=timeframe,
         evaluated_configurations=total_combinations,
         ranked_results=all_results,
         leaderboard_rows=leaderboard_rows,
@@ -215,6 +222,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         help="Path for the leaderboard CSV output.",
+    )
+    parser.add_argument(
+        "--timeframe",
+        choices=sorted(SUPPORTED_INTERVALS),
+        default="1m",
+        help="Research timeframe to test after loading source candles.",
     )
     return parser.parse_args()
 
@@ -286,6 +299,7 @@ def load_grid_search_config(config_path: str | Path) -> GridSearchConfig:
         loaded_config = _load_simple_yaml_config(path)
     if not isinstance(loaded_config, dict):
         raise ValueError(f"Config must be a YAML mapping: {path}")
+    loaded_config.setdefault("config_file", path)
     return GridSearchConfig.model_validate(loaded_config)
 
 
@@ -302,16 +316,19 @@ def build_config_from_args(args: argparse.Namespace) -> GridSearchConfig:
     return GridSearchConfig(
         strategy=args.strategy,
         data=Path(args.data),
+        timeframe=args.timeframe,
         output=Path(args.output),
+        config_file=None,
         min_trades=MIN_TRADES,
         parameters=PARAMETER_GRIDS[args.strategy],
     )
 
 
-def load_featured_data(data_path: str | Path) -> pd.DataFrame:
+def load_featured_data(data_path: str | Path, timeframe: str = "1m") -> pd.DataFrame:
     """Load OHLCV data and calculate research features once for optimization."""
     raw_df = load_ohlcv_csv(data_path)
-    featured_df = compute_features(raw_df)
+    resampled_df = resample_ohlcv(raw_df, timeframe)
+    featured_df = compute_features(resampled_df)
     return drop_indicator_warmup_rows(featured_df)
 
 
@@ -326,26 +343,32 @@ def main() -> None:
     parameter_combinations = expand_parameter_grid(config.parameters)
     print(f"Strategy: {config.strategy}")
     print(f"Data path: {config.data}")
+    print(f"Timeframe: {config.timeframe}")
     print(f"Output path: {config.output}")
     print(f"Parameter combinations: {len(parameter_combinations)}")
 
-    featured_df = load_featured_data(config.data)
+    featured_df = load_featured_data(config.data, config.timeframe)
     strategy_class = OPTIMIZER_STRATEGIES[config.strategy]
 
     summary = run_grid_search(
         df=featured_df,
         strategy_key=config.strategy,
+        timeframe=config.timeframe,
         strategy_class=strategy_class,
         parameter_grid=config.parameters,
         min_trades=config.min_trades,
     )
 
     write_leaderboard_csv(summary.leaderboard_rows, config.output)
+    memory_artifacts = write_experiment_memory(config, summary)
     print(
         f"Evaluated {summary.evaluated_configurations} configurations for "
         f"{config.strategy}."
     )
     print(f"Wrote leaderboard: {config.output}")
+    print(f"Experiment ID: {memory_artifacts.experiment_id}")
+    print(f"Journal: {memory_artifacts.journal_path.relative_to(Path.cwd())}")
+    print(f"Memory index: {memory_artifacts.index_path.relative_to(Path.cwd())}")
     print_top_results(summary.leaderboard_rows, limit=10)
 
 

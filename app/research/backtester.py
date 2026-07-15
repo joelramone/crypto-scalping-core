@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from app.research.config import DEFAULT_DATA_PATH
+from app.research.data_utils import OPTIONAL_SUM_COLUMNS, SUPPORTED_INTERVALS, resample_ohlcv
 from app.research.features import FEATURE_COLUMNS, compute_features
 from app.research.results import print_backtest_metrics, print_dataset_summary
 from app.research.simulation import simulate_strategy
@@ -46,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(STRATEGIES),
         help="Research strategy to run.",
     )
+    parser.add_argument(
+        "--timeframe",
+        default="1m",
+        choices=sorted(SUPPORTED_INTERVALS),
+        help="Research timeframe to test after loading source candles.",
+    )
     return parser.parse_args()
 
 
@@ -58,8 +65,11 @@ def load_ohlcv_csv(data_path: str | Path) -> pd.DataFrame:
         missing = ", ".join(missing_columns)
         raise ValueError(f"Missing required CSV columns: {missing}")
 
-    df = df.loc[:, REQUIRED_COLUMNS].copy()
+    optional_columns = [column for column in OPTIONAL_SUM_COLUMNS if column in df.columns]
+    df = df.loc[:, [*REQUIRED_COLUMNS, *optional_columns]].copy()
     for column in NUMERIC_COLUMNS:
+        df[column] = df[column].astype(float)
+    for column in optional_columns:
         df[column] = df[column].astype(float)
 
     return df
@@ -97,16 +107,17 @@ def main() -> None:
     """Run the research backtester entry point."""
     args = parse_args()
     strategy = load_strategy(args.strategy)
-    df = load_ohlcv_csv(args.data)
+    raw_df = load_ohlcv_csv(args.data)
+    df = resample_ohlcv(raw_df, args.timeframe)
     featured_df = compute_features(df)
     featured_df = drop_indicator_warmup_rows(featured_df)
 
     print("Research backtester initialized")
-    print_dataset_summary(df, args.data)
+    print_dataset_summary(df, args.data, args.timeframe)
     print_feature_summary(featured_df)
 
     backtest_result = simulate_strategy(featured_df, strategy)
-    print_backtest_metrics(strategy.name(), backtest_result.metrics)
+    print_backtest_metrics(strategy.name(), backtest_result.metrics, args.timeframe)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 import pandas as pd
 
+from app.research.signal_quality.features import add_signal_quality_features
+
 FEATURE_COLUMNS = (
     "returns",
     "candle_body",
@@ -25,6 +27,19 @@ FEATURE_COLUMNS = (
     "volatility_20",
     "distance_from_ema20",
     "distance_from_ema200",
+    "body_abs",
+    "body_to_range",
+    "close_location_value",
+    "upper_wick_ratio",
+    "lower_wick_ratio",
+    "range_sma20",
+    "range_expansion_ratio",
+    "atr_sma20",
+    "atr_expansion_ratio",
+    "ema20_slope_pct",
+    "ema50_slope",
+    "ema50_slope_pct",
+    "ema_alignment_strength",
 )
 
 
@@ -87,4 +102,4 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     features["distance_from_ema20"] = (close - features["ema20"]) / features["ema20"]
     features["distance_from_ema200"] = (close - features["ema200"]) / features["ema200"]
 
-    return features
+    return add_signal_quality_features(features)

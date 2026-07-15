@@ -7,9 +7,14 @@ import pandas as pd
 from app.research.simulation import BacktestMetrics
 
 
-def print_dataset_summary(df: pd.DataFrame, data_path: str | Path) -> None:
+def print_dataset_summary(
+    df: pd.DataFrame,
+    data_path: str | Path,
+    timeframe: str = "1m",
+) -> None:
     """Print a basic OHLCV dataset summary."""
     print(f"Loaded data: {data_path}")
+    print(f"Timeframe: {timeframe}")
     print(f"Total candles: {len(df)}")
     print(f"First timestamp: {df['timestamp'].iloc[0]}")
     print(f"Last timestamp: {df['timestamp'].iloc[-1]}")
@@ -17,10 +22,15 @@ def print_dataset_summary(df: pd.DataFrame, data_path: str | Path) -> None:
     print(f"Last close: {df['close'].iloc[-1]}")
 
 
-def print_backtest_metrics(strategy_name: str, metrics: BacktestMetrics) -> None:
+def print_backtest_metrics(
+    strategy_name: str,
+    metrics: BacktestMetrics,
+    timeframe: str = "1m",
+) -> None:
     """Print strategy comparison backtest metrics."""
     print("Backtest metrics:")
     print(f"  Strategy Name: {strategy_name}")
+    print(f"  Timeframe: {timeframe}")
     print(f"  Total Trades: {metrics.total_trades}")
     print(f"  Win Rate: {metrics.win_rate:.2%}")
     print(f"  Profit Factor: {metrics.profit_factor:.4f}")
