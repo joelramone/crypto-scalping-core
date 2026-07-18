@@ -89,7 +89,15 @@ class DonchianBreakoutStrategy(BaseStrategy):
         donchian_high = (
             df["high"].rolling(window=self.lookback, min_periods=self.lookback).max().shift(1)
         )
-        base_entries = (df["close"] > donchian_high) & (df["volume_ratio"] > self.volume_ratio)
+        atr_median = df["atr14"].rolling(window=20, min_periods=20).median()
+
+        base_entries = (
+            (df["close"] > donchian_high)
+            & (df["close"] > df["ema200"])
+            & (df["ema20_slope"] > 0)
+            & (df["volume_ratio"] > self.volume_ratio)
+            & (df["atr14"] > atr_median)
+        ).fillna(False)
 
         quality_score, quality_components, breakout_distance_pct = self._prepare_quality_scores(
             df,
