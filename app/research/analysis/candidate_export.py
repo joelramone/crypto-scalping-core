@@ -118,10 +118,10 @@ def _parse_args() -> ExportConfig:
 
 def load_market_data(data_path: Path, timeframe: str) -> pd.DataFrame:
     df = pd.read_csv(data_path)
-    timestamp_column = "timestamp" if "timestamp" in df.columns else df.columns[0]
-    df[timestamp_column] = pd.to_datetime(df[timestamp_column], utc=True)
-    df = df.sort_values(timestamp_column).set_index(timestamp_column)
-    df.index.name = "timestamp"
+    if "timestamp" not in df.columns:
+        raise ValueError(f"Expected timestamp column. Available columns: {list(df.columns)}")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.sort_values("timestamp")
     resampled = resample_ohlcv(df, timeframe)
     if "timestamp" in resampled.columns:
         resampled["timestamp"] = pd.to_datetime(resampled["timestamp"], utc=True)
@@ -284,6 +284,7 @@ def export_candidates(config: ExportConfig) -> Path:
     exported = simulate_candidate_outcomes(df, config)
     config.output.parent.mkdir(parents=True, exist_ok=True)
     exported.to_csv(config.output, index=False)
+    print(f"Exported {len(exported)} candidates")
     return config.output
 
 

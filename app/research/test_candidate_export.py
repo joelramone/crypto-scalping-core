@@ -8,6 +8,7 @@ from app.research.analysis.candidate_export import (
     ExportConfig,
     compute_base_candidates,
     compute_quality_score,
+    load_market_data,
     enrich_features,
     simulate_candidate_outcomes,
 )
@@ -86,3 +87,25 @@ def test_quality_analysis_report_mentions_top_features() -> None:
 
     assert "Potentially Useful Features" in report
     assert "Quality Score Performance" in report
+
+
+def test_load_market_data_requires_timestamp_column(tmp_path) -> None:
+    csv_path = tmp_path / "candles.csv"
+    pd.DataFrame(
+        {
+            "open_time": ["2026-01-01T00:00:00Z"],
+            "open": [1.0],
+            "high": [2.0],
+            "low": [0.5],
+            "close": [1.5],
+            "volume": [10.0],
+        }
+    ).to_csv(csv_path, index=False)
+
+    try:
+        load_market_data(csv_path, "15m")
+    except ValueError as exc:
+        assert "Expected timestamp column." in str(exc)
+        assert "open_time" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when timestamp column is missing")
