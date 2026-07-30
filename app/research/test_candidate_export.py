@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.research.analysis.candidate_export import (
+    EXPORT_COLUMNS,
     ExportConfig,
     compute_base_candidates,
     compute_quality_score,
@@ -13,22 +14,50 @@ from app.research.analysis.candidate_export import (
     simulate_candidate_outcomes,
 )
 from app.research.analysis.quality_analysis import build_report
+from app.research.simulation import simulate_strategy
+from app.research.strategies import DonchianBreakoutStrategy
 
 
 def _sample_market_data() -> pd.DataFrame:
-    index = pd.date_range("2026-01-01", periods=80, freq="15min", tz="UTC")
-    close = pd.Series([100 + (i * 0.2) for i in range(80)], index=index)
-    data = pd.DataFrame(
+    index = pd.date_range("2026-01-01", periods=300, freq="15min", tz="UTC")
+    close = [100.0 + (i * 0.02) + ((i % 2) * 0.01) for i in range(300)]
+
+    # After every official feature has warmed up, create consecutive breakouts.
+    # Their larger true ranges lift ATR above its rolling median, while their
+    # closes remain far inside the deliberately wide 50% TP/SL test thresholds.
+    for i in range(260, 272):
+        close[i] = close[259] + 1.0 + ((i - 260) * 1.0)
+    for i in range(272, 300):
+        close[i] = close[271] + ((i - 271) * 0.02)
+
+    breakout = pd.Series([i >= 260 and i < 272 for i in range(300)])
+    close_series = pd.Series(close)
+    half_range = breakout.map({False: 0.15, True: 0.25})
+    return pd.DataFrame(
         {
-            "open": close - 0.1,
-            "high": close + 0.4,
-            "low": close - 0.4,
-            "close": close,
-            "volume": [100 + (i % 10) * 15 for i in range(80)],
-        },
-        index=index,
+            "timestamp": index,
+            "open": close_series - 0.05,
+            "high": close_series + half_range,
+            "low": close_series - half_range,
+            "close": close_series,
+            "volume": breakout.map({False: 100.0, True: 250.0}),
+        }
     )
-    return data
+
+
+def _no_candidate_market_data() -> pd.DataFrame:
+    index = pd.date_range("2026-01-01", periods=300, freq="15min", tz="UTC")
+    close = pd.Series([100.0 + ((i % 2) * 0.01) for i in range(300)])
+    return pd.DataFrame(
+        {
+            "timestamp": index,
+            "open": close,
+            "high": close + 0.15,
+            "low": close - 0.15,
+            "close": close,
+            "volume": 100.0,
+        }
+    )
 
 
 def test_candidate_export_preserves_base_subset_relationship() -> None:
@@ -62,6 +91,72 @@ def test_candidate_export_outputs_not_opened_rows_when_position_active() -> None
     assert not exported.empty
     assert set(exported["trade_result"].unique()).issubset({"winner", "loser", "flat", "not_opened"})
     assert (exported["trade_opened"] == False).any()  # noqa: E712
+
+
+def test_candidate_export_returns_stable_schema_when_no_candidates() -> None:
+    config = ExportConfig(
+        strategy="donchian_breakout",
+        data=Path("unused"),
+        timeframe="15m",
+        output=Path("unused"),
+    )
+
+    exported = simulate_candidate_outcomes(_no_candidate_market_data(), config)
+
+    assert exported.empty
+    assert exported.columns.tolist() == EXPORT_COLUMNS
+    assert pd.api.types.is_bool_dtype(exported["trade_opened"])
+
+
+def test_candidate_export_reuses_official_trade_records() -> None:
+    config = ExportConfig(
+        strategy="donchian_breakout",
+        data=Path("unused"),
+        timeframe="15m",
+        output=Path("unused"),
+        lookback=3,
+        volume_ratio=0.4,
+        max_holding_candles=5,
+        take_profit_pct=0.5,
+        stop_loss_pct=0.5,
+    )
+    featured = enrich_features(_sample_market_data(), config)
+    strategy = DonchianBreakoutStrategy(
+        lookback=config.lookback,
+        volume_ratio=config.volume_ratio,
+        take_profit_pct=config.take_profit_pct,
+        stop_loss_pct=config.stop_loss_pct,
+        max_holding_candles=config.max_holding_candles,
+        min_quality_score=config.min_quality_score,
+        min_body_to_range=config.min_body_to_range,
+        min_close_location=config.min_close_location,
+        min_range_expansion=config.min_range_expansion,
+        min_atr_expansion=config.min_atr_expansion,
+        min_ema20_slope_pct=config.min_ema20_slope_pct,
+        min_ema_alignment_strength=config.min_ema_alignment_strength,
+        min_breakout_distance_pct=config.min_breakout_distance_pct,
+    )
+    official = simulate_strategy(featured, strategy)
+    exported = simulate_candidate_outcomes(_sample_market_data(), config)
+    opened = exported[exported["trade_opened"]].reset_index(drop=True)
+
+    assert len(opened) == official.metrics.total_trades
+    assert opened["timestamp"].tolist() == [
+        trade.entry_timestamp for trade in official.trades
+    ]
+    assert opened["entry_price"].tolist() == [
+        trade.entry_price for trade in official.trades
+    ]
+    assert opened["exit_timestamp"].tolist() == [
+        trade.exit_timestamp for trade in official.trades
+    ]
+    assert opened["exit_price"].tolist() == [
+        trade.exit_price for trade in official.trades
+    ]
+    assert opened["gross_pnl"].tolist() == [trade.gross_pnl for trade in official.trades]
+    assert opened["fees"].tolist() == [trade.fees for trade in official.trades]
+    assert opened["net_pnl"].tolist() == [trade.net_pnl for trade in official.trades]
+    assert opened["net_pnl"].sum() == official.metrics.net_pnl
 
 
 def test_quality_analysis_report_mentions_top_features() -> None:
@@ -105,7 +200,6 @@ def test_load_market_data_requires_timestamp_column(tmp_path) -> None:
     try:
         load_market_data(csv_path, "15m")
     except ValueError as exc:
-        assert "Expected timestamp column." in str(exc)
-        assert "open_time" in str(exc)
+        assert "Missing required CSV columns: timestamp" in str(exc)
     else:
         raise AssertionError("Expected ValueError when timestamp column is missing")

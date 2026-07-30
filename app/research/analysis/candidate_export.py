@@ -9,34 +9,11 @@ from typing import Any
 
 import pandas as pd
 
-try:
-    from app.research.data_utils import resample_ohlcv
-except Exception:  # pragma: no cover - fallback for older environments
-    def resample_ohlcv(df: pd.DataFrame, interval: str) -> pd.DataFrame:
-        if interval == "1m":
-            return df.copy()
-        rule_map = {"5m": "5min", "15m": "15min"}
-        if interval not in rule_map:
-            raise ValueError(f"Unsupported interval: {interval}")
-        aggregations = {
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
-        }
-        optional_sum_columns = [
-            "quote_volume",
-            "trades",
-            "taker_buy_base_volume",
-            "taker_buy_quote_volume",
-        ]
-        for column in optional_sum_columns:
-            if column in df.columns:
-                aggregations[column] = "sum"
-        resampled = df.resample(rule_map[interval]).agg(aggregations).dropna(subset=["open", "high", "low", "close"])
-        resampled.index.name = "timestamp"
-        return resampled.reset_index()
+from app.research.backtester import drop_indicator_warmup_rows, load_ohlcv_csv
+from app.research.data_utils import resample_ohlcv
+from app.research.features import compute_features
+from app.research.simulation import simulate_strategy
+from app.research.strategies import DonchianBreakoutStrategy
 
 
 FEATURE_COLUMNS = [
@@ -51,6 +28,23 @@ FEATURE_COLUMNS = [
     "volume_ratio",
     "rsi14",
     "atr14",
+]
+
+EXPORT_COLUMNS = [
+    "timestamp",
+    "entry_price",
+    "trade_opened",
+    "trade_result",
+    "exit_timestamp",
+    "exit_price",
+    "exit_reason",
+    "holding_candles",
+    "notional",
+    "gross_return",
+    "fees",
+    "gross_pnl",
+    "net_pnl",
+    *FEATURE_COLUMNS,
 ]
 
 
@@ -117,163 +111,93 @@ def _parse_args() -> ExportConfig:
 
 
 def load_market_data(data_path: Path, timeframe: str) -> pd.DataFrame:
-    df = pd.read_csv(data_path)
-    if "timestamp" not in df.columns:
-        raise ValueError(f"Expected timestamp column. Available columns: {list(df.columns)}")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.sort_values("timestamp")
-    resampled = resample_ohlcv(df, timeframe)
-    if "timestamp" in resampled.columns:
-        resampled["timestamp"] = pd.to_datetime(resampled["timestamp"], utc=True)
-        resampled = resampled.sort_values("timestamp").set_index("timestamp")
-    else:
-        resampled = resampled.sort_index()
-    return resampled
-
-
-def _atr14(df: pd.DataFrame) -> pd.Series:
-    prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.rolling(window=14, min_periods=14).mean()
-
-
-def _rsi14(close: pd.Series) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
-    rs = avg_gain / avg_loss.replace(0.0, pd.NA)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return rsi.fillna(50.0)
+    raw_df = load_ohlcv_csv(data_path)
+    return resample_ohlcv(raw_df, timeframe)
 
 
 def enrich_features(df: pd.DataFrame, config: ExportConfig) -> pd.DataFrame:
-    enriched = df.copy()
-    enriched["ema20"] = enriched["close"].ewm(span=20, adjust=False).mean()
-    enriched["ema50"] = enriched["close"].ewm(span=50, adjust=False).mean()
-    enriched["ema200"] = enriched["close"].ewm(span=200, adjust=False).mean()
-    enriched["ema20_slope"] = enriched["ema20"].diff()
-    enriched["ema20_slope_pct"] = enriched["ema20"].pct_change().fillna(0.0)
-    enriched["atr14"] = _atr14(enriched)
-    enriched["rsi14"] = _rsi14(enriched["close"])
-    candle_range = (enriched["high"] - enriched["low"]).replace(0.0, pd.NA)
-    enriched["body_to_range"] = (enriched["close"] - enriched["open"]).abs() / candle_range
-    enriched["close_location_value"] = (enriched["close"] - enriched["low"]) / candle_range
-    enriched["candle_range"] = (enriched["high"] - enriched["low"]).fillna(0.0)
-    enriched["range_expansion_ratio"] = enriched["candle_range"] / enriched["candle_range"].rolling(window=20, min_periods=20).median()
-    enriched["atr_expansion_ratio"] = enriched["candle_range"] / enriched["atr14"].replace(0.0, pd.NA)
-    enriched["ema_alignment_strength"] = (
-        (enriched["ema20"] - enriched["ema50"]) / enriched["close"].replace(0.0, pd.NA)
-        + (enriched["ema50"] - enriched["ema200"]) / enriched["close"].replace(0.0, pd.NA)
+    del config
+    return drop_indicator_warmup_rows(compute_features(df))
+
+
+def _build_strategy(config: ExportConfig) -> DonchianBreakoutStrategy:
+    return DonchianBreakoutStrategy(
+        lookback=config.lookback,
+        volume_ratio=config.volume_ratio,
+        take_profit_pct=config.take_profit_pct,
+        stop_loss_pct=config.stop_loss_pct,
+        max_holding_candles=config.max_holding_candles,
+        min_quality_score=config.min_quality_score,
+        min_body_to_range=config.min_body_to_range,
+        min_close_location=config.min_close_location,
+        min_range_expansion=config.min_range_expansion,
+        min_atr_expansion=config.min_atr_expansion,
+        min_ema20_slope_pct=config.min_ema20_slope_pct,
+        min_ema_alignment_strength=config.min_ema_alignment_strength,
+        min_breakout_distance_pct=config.min_breakout_distance_pct,
     )
-    enriched["volume_ratio"] = enriched["volume"] / enriched["volume"].rolling(window=20, min_periods=20).mean()
-    donchian_high = enriched["high"].rolling(window=config.lookback, min_periods=config.lookback).max().shift(1)
-    enriched["donchian_high"] = donchian_high
-    enriched["breakout_distance_pct"] = (enriched["close"] - donchian_high) / donchian_high.replace(0.0, pd.NA)
-    enriched["atr_median"] = enriched["atr14"].rolling(window=20, min_periods=20).median()
-    numeric_columns = [column for column in FEATURE_COLUMNS if column in enriched.columns]
-    enriched[numeric_columns] = enriched[numeric_columns].apply(pd.to_numeric, errors="coerce")
-    return enriched
 
 
 def compute_quality_score(df: pd.DataFrame, config: ExportConfig) -> pd.Series:
-    checks = pd.DataFrame(
-        {
-            "body_to_range": df["body_to_range"] >= config.min_body_to_range,
-            "close_location_value": df["close_location_value"] >= config.min_close_location,
-            "range_expansion_ratio": df["range_expansion_ratio"] >= config.min_range_expansion,
-            "atr_expansion_ratio": df["atr_expansion_ratio"] >= config.min_atr_expansion,
-            "ema20_slope_pct": df["ema20_slope_pct"] >= config.min_ema20_slope_pct,
-            "ema_alignment_strength": df["ema_alignment_strength"] >= config.min_ema_alignment_strength,
-            "breakout_distance_pct": df["breakout_distance_pct"] >= config.min_breakout_distance_pct,
-        }
-    ).fillna(False)
-    return checks.sum(axis=1)
+    strategy = _build_strategy(config)
+    strategy.generate_entries(df)
+    return strategy.last_quality_scores
 
 
 def compute_base_candidates(df: pd.DataFrame, config: ExportConfig) -> pd.Series:
-    return (
-        (df["close"] > df["donchian_high"])
-        & (df["close"] > df["ema200"])
-        & (df["ema20_slope"] > 0)
-        & (df["volume_ratio"] > config.volume_ratio)
-        & (df["atr14"] > df["atr_median"])
-    ).fillna(False)
+    strategy = _build_strategy(config)
+    strategy.min_quality_score = 0
+    return strategy.generate_entries(df)
 
 
 def simulate_candidate_outcomes(df: pd.DataFrame, config: ExportConfig) -> pd.DataFrame:
     working = enrich_features(df, config)
-    working["quality_score"] = compute_quality_score(working, config)
-    base_candidates = compute_base_candidates(working, config)
+    strategy = _build_strategy(config)
+    base_candidates = strategy.generate_entries(working)
+    working["quality_score"] = strategy.last_quality_scores
+    working["breakout_distance_pct"] = strategy.last_breakout_distance_pct
+    result = simulate_strategy(working, strategy)
+    trades_by_entry_index = {trade.entry_index: trade for trade in result.trades}
 
     rows: list[dict[str, Any]] = []
-    position_exit_index = -1
-    for index_position, (timestamp, row) in enumerate(working.iterrows()):
+    for index_position, (_, row) in enumerate(working.iterrows()):
         if not bool(base_candidates.iloc[index_position]):
             continue
 
+        trade = trades_by_entry_index.get(index_position)
         export_row: dict[str, Any] = {
-            "timestamp": timestamp,
+            "timestamp": row["timestamp"],
             "entry_price": row["close"],
-            "trade_opened": False,
-            "trade_result": "not_opened",
-            "gross_pnl": pd.NA,
-            "net_pnl": pd.NA,
-            "exit_reason": "",
-            "holding_candles": pd.NA,
+            "trade_opened": trade is not None,
+            "trade_result": (
+                "winner"
+                if trade is not None and trade.net_pnl > 0.0
+                else "loser"
+                if trade is not None and trade.net_pnl < 0.0
+                else "flat"
+                if trade is not None
+                else "not_opened"
+            ),
+            "exit_timestamp": trade.exit_timestamp if trade is not None else pd.NA,
+            "exit_price": trade.exit_price if trade is not None else pd.NA,
+            "notional": trade.notional if trade is not None else pd.NA,
+            "gross_return": (
+                trade.gross_pnl / trade.notional if trade is not None else pd.NA
+            ),
+            "gross_pnl": trade.gross_pnl if trade is not None else pd.NA,
+            "fees": trade.fees if trade is not None else pd.NA,
+            "net_pnl": trade.net_pnl if trade is not None else pd.NA,
+            "exit_reason": trade.exit_reason if trade is not None else "",
+            "holding_candles": trade.holding_candles if trade is not None else pd.NA,
         }
         for column in FEATURE_COLUMNS:
             export_row[column] = row[column]
-
-        if index_position <= position_exit_index:
-            rows.append(export_row)
-            continue
-
-        entry_price = float(row["close"])
-        stop_price = entry_price * (1.0 - config.stop_loss_pct)
-        take_profit_price = entry_price * (1.0 + config.take_profit_pct)
-        exit_idx = min(index_position + config.max_holding_candles, len(working) - 1)
-        exit_price = float(working.iloc[exit_idx]["close"])
-        exit_reason = "max_holding"
-
-        for future_idx in range(index_position + 1, exit_idx + 1):
-            future_row = working.iloc[future_idx]
-            if float(future_row["low"]) <= stop_price:
-                exit_idx = future_idx
-                exit_price = stop_price
-                exit_reason = "stop_loss"
-                break
-            if float(future_row["high"]) >= take_profit_price:
-                exit_idx = future_idx
-                exit_price = take_profit_price
-                exit_reason = "take_profit"
-                break
-        else:
-            exit_price = float(working.iloc[exit_idx]["close"])
-
-        gross_pnl = (exit_price / entry_price) - 1.0
-        export_row.update(
-            {
-                "trade_opened": True,
-                "trade_result": "winner" if gross_pnl > 0 else "loser" if gross_pnl < 0 else "flat",
-                "gross_pnl": gross_pnl,
-                "net_pnl": gross_pnl,
-                "exit_reason": exit_reason,
-                "holding_candles": exit_idx - index_position,
-            }
-        )
-        position_exit_index = exit_idx
         rows.append(export_row)
 
-    return pd.DataFrame(rows)
+    exported = pd.DataFrame.from_records(rows, columns=EXPORT_COLUMNS)
+    if exported.empty:
+        exported["trade_opened"] = pd.Series(dtype="bool")
+    return exported
 
 
 def export_candidates(config: ExportConfig) -> Path:
