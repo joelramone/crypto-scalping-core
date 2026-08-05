@@ -25,12 +25,17 @@ LEADERBOARD_PARAM_COLUMNS = {
     "timeframe",
     "rank",
     "total_trades",
+    "wins",
+    "losses",
     "win_rate",
+    "gross_profit",
+    "gross_loss",
     "profit_factor",
     "expectancy",
     "max_drawdown",
     "gross_pnl",
     "net_pnl",
+    "average_holding_candles",
 }
 
 
@@ -94,10 +99,28 @@ def _build_summary_from_leaderboard(df: pd.DataFrame, config: GridSearchConfig) 
     ranked_results: list[GridSearchResult] = []
     leaderboard_rows: list[LeaderboardRow] = []
     for rank, (_, row) in enumerate(sorted_df.iterrows(), start=1):
+        wins = int(row["wins"]) if "wins" in row.index and pd.notna(row["wins"]) else 0
+        losses = int(row["losses"]) if "losses" in row.index and pd.notna(row["losses"]) else 0
+        gross_profit = (
+            float(row["gross_profit"])
+            if "gross_profit" in row.index and pd.notna(row["gross_profit"])
+            else 0.0
+        )
+        gross_loss = (
+            float(row["gross_loss"])
+            if "gross_loss" in row.index and pd.notna(row["gross_loss"])
+            else 0.0
+        )
+        average_holding_candles = (
+            float(row["average_holding_candles"])
+            if "average_holding_candles" in row.index
+            and pd.notna(row["average_holding_candles"])
+            else 0.0
+        )
         metrics = BacktestMetrics(
             total_trades=int(row["total_trades"]),
-            wins=0,
-            losses=0,
+            wins=wins,
+            losses=losses,
             win_rate=float(row["win_rate"]),
             gross_pnl=float(row["gross_pnl"]),
             estimated_fees=0.0,
@@ -114,6 +137,7 @@ def _build_summary_from_leaderboard(df: pd.DataFrame, config: GridSearchConfig) 
                 strategy=config.strategy,
                 parameters=parameters,
                 metrics=metrics,
+                average_holding_candles=average_holding_candles,
             )
         )
         leaderboard_rows.append(
@@ -122,12 +146,17 @@ def _build_summary_from_leaderboard(df: pd.DataFrame, config: GridSearchConfig) 
                 timeframe=config.timeframe,
                 rank=rank,
                 total_trades=int(row["total_trades"]),
+                wins=wins,
+                losses=losses,
                 win_rate=float(row["win_rate"]),
+                gross_profit=gross_profit,
+                gross_loss=gross_loss,
                 profit_factor=float(row["profit_factor"]),
                 expectancy=float(row["expectancy"]),
                 max_drawdown=float(row["max_drawdown"]),
                 gross_pnl=float(row["gross_pnl"]),
                 net_pnl=float(row["net_pnl"]),
+                average_holding_candles=average_holding_candles,
                 parameters=parameters,
             )
         )

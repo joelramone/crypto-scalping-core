@@ -32,6 +32,7 @@ class DonchianBreakoutStrategy(BaseStrategy):
         min_ema20_slope_pct: float = float("-inf"),
         min_ema_alignment_strength: float = float("-inf"),
         min_breakout_distance_pct: float = 0.0,
+        min_close_location_filter: float = 0.0,
     ) -> None:
         self.lookback = lookback
         self.volume_ratio = volume_ratio
@@ -47,6 +48,7 @@ class DonchianBreakoutStrategy(BaseStrategy):
         self.min_ema20_slope_pct = min_ema20_slope_pct
         self.min_ema_alignment_strength = min_ema_alignment_strength
         self.min_breakout_distance_pct = min_breakout_distance_pct
+        self.min_close_location_filter = min_close_location_filter
 
         self.last_quality_scores = pd.Series(dtype="int64")
         self.last_quality_components = pd.DataFrame()
@@ -107,10 +109,16 @@ class DonchianBreakoutStrategy(BaseStrategy):
         self.last_quality_components = quality_components
         self.last_breakout_distance_pct = breakout_distance_pct
 
-        if not self.quality_filter_active():
-            return base_entries.fillna(False)
+        entries = base_entries
+        if self.quality_filter_active():
+            entries = entries & (quality_score >= self.min_quality_score)
 
-        return (base_entries & (quality_score >= self.min_quality_score)).fillna(False)
+        if self.min_close_location_filter > 0.0:
+            entries = entries & (
+                df["close_location_value"] >= self.min_close_location_filter
+            )
+
+        return entries.fillna(False)
 
     def generate_exits(self, df: pd.DataFrame) -> pd.Series:
         """Return strategy-driven exits. Donchian exits rely on TP/SL/holding only."""

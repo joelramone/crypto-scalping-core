@@ -8,15 +8,26 @@ from app.research.strategies.donchian_breakout import DonchianBreakoutStrategy
 
 
 def _feature_input() -> pd.DataFrame:
-    rows = 40
+    rows = 240
+    close = [100.0 + (index * 0.02) for index in range(rows)]
+    for index in range(220, rows):
+        close[index] = close[219] + 1.0 + (index - 220)
+
+    breakout = [index >= 220 for index in range(rows)]
     base = pd.DataFrame(
         {
             "timestamp": list(range(rows)),
-            "open": [100.0 + index for index in range(rows)],
-            "high": [101.0 + index for index in range(rows)],
-            "low": [99.0 + index for index in range(rows)],
-            "close": [100.5 + index for index in range(rows)],
-            "volume": [1000.0 + 10 * index for index in range(rows)],
+            "open": [value - 0.05 for value in close],
+            "high": [
+                value + (0.25 if is_breakout else 0.15)
+                for value, is_breakout in zip(close, breakout, strict=True)
+            ],
+            "low": [
+                value - (0.25 if is_breakout else 0.15)
+                for value, is_breakout in zip(close, breakout, strict=True)
+            ],
+            "close": close,
+            "volume": [2500.0 if is_breakout else 1000.0 for is_breakout in breakout],
         }
     )
     return compute_features(base)
@@ -30,6 +41,7 @@ def test_zero_range_candle_handling():
             "low": [100.0],
             "close": [100.0],
             "atr14": [1.0],
+            "ema20": [100.0],
             "ema20_slope": [0.0],
             "ema50": [100.0],
             "ema200": [100.0],
@@ -52,6 +64,7 @@ def test_body_to_range_and_close_location_calculation():
             "low": [8.0],
             "close": [13.0],
             "atr14": [2.0],
+            "ema20": [12.0],
             "ema20_slope": [0.5],
             "ema50": [12.0],
             "ema200": [10.0],

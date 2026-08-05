@@ -128,6 +128,7 @@ class GridSearchConfig(BaseModel):
     data: Path
     timeframe: Literal["1m", "5m", "15m"] = "1m"
     output: Path
+    report: Path | None = None
     config_file: Path | None = None
     min_trades: int = Field(default=MIN_TRADES, ge=0)
     parameters: dict[str, list[Any]] = Field(min_length=1)
@@ -139,6 +140,7 @@ class GridSearchResult(BaseModel):
     strategy: str
     parameters: dict[str, Any]
     metrics: BacktestMetrics
+    average_holding_candles: float = Field(ge=0.0)
 
 
 class GridSearchSummary(BaseModel):
@@ -176,7 +178,8 @@ def run_grid_search(
     for index, parameters in enumerate(parameter_combinations, start=1):
         print(f"Progress: {index}/{total_combinations}")
         strategy = strategy_class(**parameters)
-        metrics = simulate_strategy(df, strategy).metrics
+        backtest_result = simulate_strategy(df, strategy)
+        metrics = backtest_result.metrics
         if metrics.total_trades < min_trades:
             continue
         all_results.append(
@@ -184,6 +187,12 @@ def run_grid_search(
                 strategy=strategy_key,
                 parameters=parameters,
                 metrics=metrics,
+                average_holding_candles=(
+                    sum(trade.holding_candles for trade in backtest_result.trades)
+                    / len(backtest_result.trades)
+                    if backtest_result.trades
+                    else 0.0
+                ),
             )
         )
 
@@ -192,7 +201,12 @@ def run_grid_search(
         reverse=True,
     )
     ranked_pairs = [(result.parameters, result.metrics) for result in all_results]
-    leaderboard_rows = build_leaderboard_rows(strategy_key, timeframe, ranked_pairs)
+    leaderboard_rows = build_leaderboard_rows(
+        strategy_key,
+        timeframe,
+        ranked_pairs,
+        [result.average_holding_candles for result in all_results],
+    )
 
     return GridSearchSummary(
         strategy=strategy_key,
@@ -360,6 +374,16 @@ def main() -> None:
     )
 
     write_leaderboard_csv(summary.leaderboard_rows, config.output)
+    if config.report is not None:
+        from app.research.analysis.close_location_validation import (
+            write_close_location_validation_report,
+        )
+
+        write_close_location_validation_report(
+            featured_df,
+            config.parameters,
+            config.report,
+        )
     memory_artifacts = write_experiment_memory(config, summary)
     print(
         f"Evaluated {summary.evaluated_configurations} configurations for "

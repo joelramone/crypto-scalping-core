@@ -15,12 +15,17 @@ LEADERBOARD_COLUMNS = [
     "timeframe",
     "rank",
     "total_trades",
+    "wins",
+    "losses",
     "win_rate",
+    "gross_profit",
+    "gross_loss",
     "profit_factor",
     "expectancy",
     "max_drawdown",
     "gross_pnl",
     "net_pnl",
+    "average_holding_candles",
     "lookback",
     "rsi_threshold",
     "distance_from_ema20",
@@ -37,6 +42,7 @@ LEADERBOARD_COLUMNS = [
     "min_ema20_slope_pct",
     "min_ema_alignment_strength",
     "min_breakout_distance_pct",
+    "min_close_location_filter",
 ]
 
 
@@ -47,12 +53,17 @@ class LeaderboardRow(BaseModel):
     timeframe: str
     rank: int = Field(ge=1)
     total_trades: int = Field(ge=0)
+    wins: int = Field(ge=0)
+    losses: int = Field(ge=0)
     win_rate: float
+    gross_profit: float
+    gross_loss: float
     profit_factor: float
     expectancy: float
     max_drawdown: float
     gross_pnl: float
     net_pnl: float
+    average_holding_candles: float
     parameters: dict[str, Any]
 
     def to_csv_row(self) -> dict[str, Any]:
@@ -62,12 +73,17 @@ class LeaderboardRow(BaseModel):
             "timeframe": self.timeframe,
             "rank": self.rank,
             "total_trades": self.total_trades,
+            "wins": self.wins,
+            "losses": self.losses,
             "win_rate": self.win_rate,
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
             "profit_factor": self.profit_factor,
             "expectancy": self.expectancy,
             "max_drawdown": self.max_drawdown,
             "gross_pnl": self.gross_pnl,
             "net_pnl": self.net_pnl,
+            "average_holding_candles": self.average_holding_candles,
         }
         for column in LEADERBOARD_COLUMNS:
             if column not in row:
@@ -79,22 +95,32 @@ def build_leaderboard_rows(
     strategy_name: str,
     timeframe: str,
     ranked_results: list[tuple[dict[str, Any], BacktestMetrics]],
+    average_holding_candles: list[float] | None = None,
 ) -> list[LeaderboardRow]:
     """Convert ranked optimizer metrics into leaderboard rows."""
     rows: list[LeaderboardRow] = []
-    for index, (parameters, metrics) in enumerate(ranked_results, start=1):
+    holdings = average_holding_candles or [0.0] * len(ranked_results)
+    for index, ((parameters, metrics), average_holding) in enumerate(
+        zip(ranked_results, holdings, strict=True),
+        start=1,
+    ):
         rows.append(
             LeaderboardRow(
                 strategy=strategy_name,
                 timeframe=timeframe,
                 rank=index,
                 total_trades=metrics.total_trades,
+                wins=metrics.wins,
+                losses=metrics.losses,
                 win_rate=metrics.win_rate,
+                gross_profit=metrics.average_win * metrics.wins,
+                gross_loss=abs(metrics.average_loss * metrics.losses),
                 profit_factor=metrics.profit_factor,
                 expectancy=metrics.expectancy,
                 max_drawdown=metrics.max_drawdown,
                 gross_pnl=metrics.gross_pnl,
                 net_pnl=metrics.net_pnl,
+                average_holding_candles=average_holding,
                 parameters=parameters,
             )
         )

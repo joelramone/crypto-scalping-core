@@ -49,18 +49,24 @@ def _sample_summary() -> GridSearchSummary:
             "distance_from_ema20": -0.002,
         },
         metrics=metrics,
+        average_holding_candles=14.5,
     )
     leaderboard_row = LeaderboardRow(
         strategy="mean_reversion",
         timeframe="1m",
         rank=1,
         total_trades=metrics.total_trades,
+        wins=metrics.wins,
+        losses=metrics.losses,
         win_rate=metrics.win_rate,
+        gross_profit=metrics.average_win * metrics.wins,
+        gross_loss=abs(metrics.average_loss * metrics.losses),
         profit_factor=metrics.profit_factor,
         expectancy=metrics.expectancy,
         max_drawdown=metrics.max_drawdown,
         gross_pnl=metrics.gross_pnl,
         net_pnl=metrics.net_pnl,
+        average_holding_candles=result.average_holding_candles,
         parameters=result.parameters,
     )
     return GridSearchSummary(
@@ -159,12 +165,12 @@ def test_write_experiment_memory_creates_complete_row_and_artifacts(
     assert row["created_at_utc"].endswith("Z")
     assert row["config_file"].endswith("mean_reversion.yaml")
     assert row["leaderboard_file"] == "research/leaderboards/mean_reversion_test.csv"
-    assert row["total_configurations"] == "48"
-    assert row["eligible_configurations"] == "1"
-    assert row["best_profit_factor"] == "1.42"
-    assert row["best_expectancy"] == "0.08"
-    assert row["best_max_drawdown"] == "3.4"
-    assert row["best_total_trades"] == "123"
+    assert int(row["total_configurations"]) == 48
+    assert int(row["eligible_configurations"]) == 1
+    assert float(row["best_profit_factor"]) == pytest.approx(1.42)
+    assert float(row["best_expectancy"]) == pytest.approx(0.08)
+    assert float(row["best_max_drawdown"]) == pytest.approx(3.4)
+    assert int(row["best_total_trades"]) == 123
     assert row["status"] == "completed"
     assert json.loads(row["best_configuration"])["rsi_threshold"] == 25
 
@@ -365,10 +371,10 @@ def test_successful_historical_import_creates_imported_record(
     assert row["status"] == "imported"
     assert row["strategy"] == "donchian_breakout"
     assert row["timeframe"] == "5m"
-    assert row["total_configurations"] == "8"
-    assert row["eligible_configurations"] == "2"
-    assert row["best_max_drawdown"] == "55"
-    assert row["best_total_trades"] == "150"
+    assert int(row["total_configurations"]) == 8
+    assert int(row["eligible_configurations"]) == 2
+    assert float(row["best_max_drawdown"]) == pytest.approx(55.0)
+    assert int(row["best_total_trades"]) == 150
     assert json.loads(row["best_configuration"])["lookback"] == 20
     journal_text = (tmp_path / "research" / "journal" / "EXP-000001.md").read_text(encoding="utf-8")
     assert "Source: historical leaderboard import" in journal_text
@@ -517,6 +523,7 @@ def test_historical_import_preserves_existing_experiments(
                     average_loss=0.0,
                     max_drawdown=10.0,
                 ),
+                average_holding_candles=12.0,
             )
         ],
         leaderboard_rows=[],
