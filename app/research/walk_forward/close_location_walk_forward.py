@@ -153,6 +153,29 @@ def _metrics(trades: list[BacktestTrade], baseline_count: int) -> OOSMetrics:
     )
 
 
+def filtered_oos_trades(featured_df: pd.DataFrame) -> list[BacktestTrade]:
+    """Return the official filtered trades from every complete OOS test window."""
+    if featured_df.empty:
+        raise ValueError("Walk-forward validation requires featured candles.")
+    data = featured_df.copy()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True)
+    data = data.sort_values("timestamp").reset_index(drop=True)
+    interval = data["timestamp"].diff().dropna().median()
+    windows = build_windows(data["timestamp"].iloc[0], data["timestamp"].iloc[-1] + interval)
+    if not windows:
+        raise ValueError("Dataset does not contain one complete 6m train / 3m test window.")
+
+    trades: list[BacktestTrade] = []
+    for window in windows:
+        timestamps = data["timestamp"]
+        test_df = data.loc[
+            (timestamps >= pd.Timestamp(window.test_start))
+            & (timestamps < pd.Timestamp(window.test_end))
+        ].reset_index(drop=True)
+        trades.extend(simulate_strategy(test_df, _strategy(FILTERED_FILTER)).trades)
+    return trades
+
+
 def _verdict(
     baseline: OOSMetrics,
     filtered: OOSMetrics,
