@@ -1,0 +1,77 @@
+hypothesis_id: HYP-DONCHIAN-HIGHVOL-001
+status: PRE_REGISTERED_NOT_TESTED
+purpose: future_untouched_data_replication
+
+strategy:
+  name: donchian
+  timeframe: 15m
+  lookback: 3
+  volume_ratio: 0.4
+  take_profit_pct: 0.012
+  stop_loss_pct: 0.008
+  max_holding_candles: 24
+  min_quality_score: 0
+  min_close_location_filter: 0.94
+
+high_volatility_definition:
+  implementation: existing_regime_implementation
+  source_feature: realized_volatility_20
+  high_volatility_percentile: 0.90
+  volatility_lookback: 500
+  volatility_min_history: 200
+  threshold_shift_candles: 1
+  comparison: strictly_greater_than_shifted_threshold
+  missing_comparison: false
+  classification: entry_candle_overlay
+
+directional_expectations:
+  volatility_threshold_ratio: higher
+  range_expansion_ratio: lower
+  body_to_range: higher
+  volume_ratio: lower
+  ema_alignment_strength: lower
+  ema20_ema50_separation: lower
+  ema50_ema200_separation: lower
+  adx14: lower
+
+excluded_contradictory_features:
+  - rsi
+  - atr
+  - ema_slope
+  - breakout_distance
+
+frozen_decisions:
+  numeric_feature_thresholds_selected: false
+  feature_weights_selected: false
+  ml_model_selected: false
+  trading_filter_selected: false
+
+discovery_data:
+  periods:
+    - "2025"
+    - partial_2026
+  high_volatility_candidate_trades: 55
+  eligible_for_confirmation: false
+
+confirmation_dataset:
+  symbol: BTCUSDT
+  strictly_later_than: "2026-08-05"
+  untouched_data_required: true
+  minimum_new_high_volatility_candidate_trades: 50
+
+success_criteria:
+  minimum_directions_reproduced: 6
+  total_directional_hypotheses: 8
+  candidate_profit_factor: greater_than_1
+  candidate_expectancy: greater_than_0
+  candidate_net_pnl: greater_than_0
+  material_drawdown_deterioration: false
+
+failure_criteria:
+  directions_reproduced: fewer_than_4
+  candidate_profit_factor: less_than_or_equal_to_1
+  candidate_expectancy: less_than_or_equal_to_0
+  logical_operator: any
+
+anti_tuning:
+  tune_thresholds_after_observing_confirmation_data: prohibited
