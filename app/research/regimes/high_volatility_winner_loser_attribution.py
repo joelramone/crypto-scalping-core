@@ -22,6 +22,7 @@ from app.research.simulation import BacktestTrade, simulate_strategy
 REPORT_PATH = Path("research/reports/donchian_high_volatility_winner_loser_attribution_v1.md")
 CSV_PATH = Path("research/regimes/donchian_high_volatility_winner_loser_attribution_v1.csv")
 PERIODS = ("2025", "2026")
+FROZEN_TIMEFRAME = "15m"
 SMALL_GROUP_SIZE = 10
 
 # All columns are existing, causal entry-candle outputs of the official feature pipeline.
@@ -70,7 +71,10 @@ def frozen_high_volatility_trades(
 ) -> tuple[list[BacktestTrade], pd.Series]:
     """Simulate exactly frozen 0.94 once and retain official HIGH_VOL records."""
     strategy = build_strategy("frozen_0.94_candidate")
-    if strategy.min_close_location_filter != FROZEN_CANDIDATE_FILTER:
+    if (
+        strategy.name() != "donchian_breakout"
+        or strategy.min_close_location_filter != FROZEN_CANDIDATE_FILTER
+    ):
         raise AssertionError("Only the frozen 0.94 candidate may be attributed")
     trades = simulate_strategy(classified_df, strategy).trades
     high, _ = partition_entry_high_volatility(trades, classified_df)
@@ -220,7 +224,10 @@ def main() -> None:
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
     parser.add_argument("--output-csv", type=Path, default=CSV_PATH)
     args = parser.parse_args()
-    datasets = {"2025": prepare_dataset(args.data_2025, "15m"), "2026": prepare_dataset(args.data_2026, "15m")}
+    datasets = {
+        "2025": prepare_dataset(args.data_2025, FROZEN_TIMEFRAME),
+        "2026": prepare_dataset(args.data_2026, FROZEN_TIMEFRAME),
+    }
     write_outputs(analyze(datasets), args.report, args.output_csv)
 
 
