@@ -9,6 +9,7 @@ import pytest
 
 from app.research.regimes.high_volatility_winner_loser_attribution import (
     FEATURES,
+    FROZEN_TIMEFRAME,
     analyze,
     entry_records,
     frozen_high_volatility_trades,
@@ -64,6 +65,14 @@ def test_only_frozen_094_and_high_volatility_official_trades_are_used(monkeypatc
     )
     selected, breakout = frozen_high_volatility_trades(frame)
     assert captured[0].min_close_location_filter == 0.94
+    assert FROZEN_TIMEFRAME == "15m"
+    assert captured[0].name() == "donchian_breakout"
+    assert captured[0].lookback == 3
+    assert captured[0].volume_ratio == 0.4
+    assert captured[0].take_profit_pct() == 0.012
+    assert captured[0].stop_loss_pct() == 0.008
+    assert captured[0].max_holding_candles() == 24
+    assert captured[0].min_quality_score == 0
     assert selected == [official[0], official[2]]
     assert all(isinstance(item, BacktestTrade) for item in selected)
     assert all(any(item is source for source in official) for item in selected)
