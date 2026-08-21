@@ -7,6 +7,7 @@ from app.research.strategies.donchian_breakout import DonchianBreakoutStrategy
 from app.research.strategies.ema_pullback import EmaPullbackStrategy
 from app.research.strategies.mean_reversion import MeanReversionStrategy
 from app.research.strategies.pullback import PullbackStrategy
+from app.research.strategies.volatility_exhaustion import VolatilityExhaustionStrategy
 
 __all__ = [
     "BaseStrategy",
@@ -16,4 +17,5 @@ __all__ = [
     "EmaPullbackStrategy",
     "MeanReversionStrategy",
     "PullbackStrategy",
+    "VolatilityExhaustionStrategy",
 ]

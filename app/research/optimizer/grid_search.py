@@ -27,6 +27,7 @@ from app.research.strategies import (
     BollingerReversionStrategy,
     DonchianBreakoutStrategy,
     MeanReversionStrategy,
+    VolatilityExhaustionStrategy,
 )
 
 MIN_TRADES = 100
@@ -55,6 +56,12 @@ DONCHIAN_BREAKOUT_GRID: dict[str, list[Any]] = {
     "take_profit_pct": [0.003, 0.004, 0.006],
     "stop_loss_pct": [0.002, 0.0025, 0.003],
     "max_holding_candles": [20, 30, 45],
+}
+
+VOLATILITY_EXHAUSTION_BASELINE: dict[str, list[Any]] = {
+    "take_profit_pct": [0.003],
+    "stop_loss_pct": [0.002],
+    "max_holding_candles": [25],
 }
 
 
@@ -112,12 +119,14 @@ OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "bollinger_reversion": OptimizerBollingerReversionStrategy,
     "donchian_breakout": DonchianBreakoutStrategy,
     "mean_reversion": MeanReversionStrategy,
+    "volatility_exhaustion": VolatilityExhaustionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     "bollinger_reversion": BOLLINGER_REVERSION_GRID,
     "donchian_breakout": DONCHIAN_BREAKOUT_GRID,
     "mean_reversion": MEAN_REVERSION_GRID,
+    "volatility_exhaustion": VOLATILITY_EXHAUSTION_BASELINE,
 }
 
 

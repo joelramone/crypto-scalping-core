@@ -19,6 +19,7 @@ from app.research.strategies import (
     EmaPullbackStrategy,
     MeanReversionStrategy,
     PullbackStrategy,
+    VolatilityExhaustionStrategy,
 )
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
@@ -30,6 +31,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "bollinger_reversion": BollingerReversionStrategy,
     "donchian_breakout": DonchianBreakoutStrategy,
     "ema_pullback": EmaPullbackStrategy,
+    "volatility_exhaustion": VolatilityExhaustionStrategy,
 }
 
 
