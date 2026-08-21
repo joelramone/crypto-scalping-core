@@ -1,0 +1,69 @@
+hypothesis_id: HYP-MEAN-REVERSION-BASELINE-001
+status: PRE_REGISTERED_NOT_TESTED
+research_classification: DISCOVERY_BASELINE
+
+strategy:
+  name: volatility_exhaustion
+  timeframe: 15m
+  direction: long_only
+  entry:
+    previous_close: strictly_less_than_previous_bb_lower
+    current_close: greater_than_or_equal_to_current_bb_lower
+  take_profit_pct: 0.003
+  stop_loss_pct: 0.002
+  max_holding_candles: 25
+  indicator_exits: false
+  entry_execution: official_simulator_close
+
+bollinger_features:
+  implementation: official_existing_feature_pipeline
+  lookback_strategy_parameter: false
+  multiplier_strategy_parameter: false
+
+prohibited_filters:
+  - RSI
+  - volume_ratio
+  - ATR
+  - trend
+  - EMA
+  - ADX
+  - regime
+  - candle_score
+  - close_location
+  - z_score
+  - VWAP
+  - machine_learning
+  - short_entries
+
+discovery_dataset:
+  path: data/BTCUSDT_1m.csv
+  permitted_period: "2025"
+  classification: DISCOVERY_DATA
+  resample_timeframe: 15m
+
+prohibited_data:
+  - "2026-01-01 through 2026-08-05"
+  - "post-2026-08-05"
+  - Donchian_reserved_future_confirmation_data
+
+stop_rules:
+  insufficient_sample:
+    trades: fewer_than_100
+  baseline_reject:
+    minimum_trades: 100
+    any:
+      - profit_factor_less_than_or_equal_to_1
+      - expectancy_less_than_or_equal_to_0
+      - net_pnl_less_than_or_equal_to_0
+  baseline_candidate:
+    all:
+      - trades_greater_than_or_equal_to_100
+      - profit_factor_greater_than_1
+      - expectancy_greater_than_0
+      - net_pnl_greater_than_0
+      - no_month_contributes_more_than_80_percent_of_positive_monthly_net_pnl
+
+post_result_actions:
+  optimize_after_reject: prohibited
+  add_filters_in_response_to_failure: prohibited
+  implement_stage_3: prohibited
