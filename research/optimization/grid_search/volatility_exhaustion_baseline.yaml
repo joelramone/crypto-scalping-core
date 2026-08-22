@@ -2,6 +2,7 @@ strategy: volatility_exhaustion
 data: data/BTCUSDT_1m.csv
 timeframe: 15m
 output: research/leaderboards/volatility_exhaustion_baseline_v1.csv
+report: research/reports/volatility_exhaustion_baseline_v1.md
 
 min_trades: 0
 
