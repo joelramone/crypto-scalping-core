@@ -21,7 +21,7 @@ from app.research.optimizer.leaderboard import (
     print_top_results,
     write_leaderboard_csv,
 )
-from app.research.simulation import BacktestMetrics, simulate_strategy
+from app.research.simulation import BacktestMetrics, BacktestTrade, simulate_strategy
 from app.research.strategies import (
     BaseStrategy,
     BollingerReversionStrategy,
@@ -150,6 +150,7 @@ class GridSearchResult(BaseModel):
     parameters: dict[str, Any]
     metrics: BacktestMetrics
     average_holding_candles: float = Field(ge=0.0)
+    trades: list[BacktestTrade] = Field(default_factory=list, exclude=True)
 
 
 class GridSearchSummary(BaseModel):
@@ -202,6 +203,7 @@ def run_grid_search(
                     if backtest_result.trades
                     else 0.0
                 ),
+                trades=backtest_result.trades,
             )
         )
 
@@ -352,7 +354,9 @@ def load_featured_data(data_path: str | Path, timeframe: str = "1m") -> pd.DataF
     raw_df = load_ohlcv_csv(data_path)
     resampled_df = resample_ohlcv(raw_df, timeframe)
     featured_df = compute_features(resampled_df)
-    return drop_indicator_warmup_rows(featured_df)
+    warmed_df = drop_indicator_warmup_rows(featured_df)
+    warmed_df.attrs["total_candles"] = len(resampled_df)
+    return warmed_df
 
 
 def main() -> None:
@@ -383,7 +387,26 @@ def main() -> None:
     )
 
     write_leaderboard_csv(summary.leaderboard_rows, config.output)
-    if config.report is not None:
+    if config.report is not None and config.strategy == "volatility_exhaustion":
+        from app.research.simulation import BacktestResult
+        from app.research.volatility_exhaustion_report import (
+            build_volatility_exhaustion_report,
+            write_volatility_exhaustion_report,
+        )
+
+        if not summary.ranked_results:
+            raise RuntimeError("Volatility Exhaustion baseline produced no result")
+        baseline = summary.ranked_results[0]
+        report = build_volatility_exhaustion_report(
+            result=BacktestResult(trades=baseline.trades, metrics=baseline.metrics),
+            total_candles=int(featured_df.attrs.get("total_candles", len(featured_df))),
+            feature_rows=len(featured_df),
+            data_path=config.data,
+            timeframe=config.timeframe,
+            parameters=baseline.parameters,
+        )
+        write_volatility_exhaustion_report(report, config.report)
+    elif config.report is not None:
         from app.research.analysis.close_location_validation import (
             write_close_location_validation_report,
         )
