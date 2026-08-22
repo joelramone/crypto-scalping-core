@@ -21,12 +21,13 @@ from app.research.optimizer.leaderboard import (
     print_top_results,
     write_leaderboard_csv,
 )
-from app.research.simulation import BacktestMetrics, BacktestTrade, simulate_strategy
+from app.research.simulation import BacktestMetrics, BacktestResult, BacktestTrade, simulate_strategy
 from app.research.strategies import (
     BaseStrategy,
     BollingerReversionStrategy,
     DonchianBreakoutStrategy,
     MeanReversionStrategy,
+    MomentumPullbackContinuationStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -119,6 +120,7 @@ OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "bollinger_reversion": OptimizerBollingerReversionStrategy,
     "donchian_breakout": DonchianBreakoutStrategy,
     "mean_reversion": MeanReversionStrategy,
+    "momentum_pullback_continuation": MomentumPullbackContinuationStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
 }
 
@@ -126,6 +128,11 @@ PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     "bollinger_reversion": BOLLINGER_REVERSION_GRID,
     "donchian_breakout": DONCHIAN_BREAKOUT_GRID,
     "mean_reversion": MEAN_REVERSION_GRID,
+    "momentum_pullback_continuation": {
+        "take_profit_pct": [0.012],
+        "stop_loss_pct": [0.008],
+        "max_holding_candles": [24],
+    },
     "volatility_exhaustion": VOLATILITY_EXHAUSTION_BASELINE,
 }
 
@@ -387,8 +394,27 @@ def main() -> None:
     )
 
     write_leaderboard_csv(summary.leaderboard_rows, config.output)
-    if config.report is not None and config.strategy == "volatility_exhaustion":
-        from app.research.simulation import BacktestResult
+    if config.report is not None and config.strategy == "momentum_pullback_continuation":
+        from app.research.momentum_pullback_report import (
+            build_momentum_pullback_report,
+            write_momentum_pullback_report,
+        )
+
+        if not summary.ranked_results:
+            raise RuntimeError("Momentum Pullback baseline produced no result")
+        baseline = summary.ranked_results[0]
+        strategy = strategy_class(**baseline.parameters)
+        report = build_momentum_pullback_report(
+            result=BacktestResult(trades=baseline.trades, metrics=baseline.metrics),
+            total_candles=int(featured_df.attrs.get("total_candles", len(featured_df))),
+            feature_rows=len(featured_df),
+            raw_entry_signals=int(strategy.generate_entries(featured_df).sum()),
+            data_path=config.data,
+            timeframe=config.timeframe,
+            parameters=baseline.parameters,
+        )
+        write_momentum_pullback_report(report, config.report)
+    elif config.report is not None and config.strategy == "volatility_exhaustion":
         from app.research.volatility_exhaustion_report import (
             build_volatility_exhaustion_report,
             write_volatility_exhaustion_report,

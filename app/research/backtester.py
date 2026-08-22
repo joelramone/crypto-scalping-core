@@ -18,6 +18,7 @@ from app.research.strategies import (
     DonchianBreakoutStrategy,
     EmaPullbackStrategy,
     MeanReversionStrategy,
+    MomentumPullbackContinuationStrategy,
     PullbackStrategy,
     VolatilityExhaustionStrategy,
 )
@@ -27,6 +28,7 @@ NUMERIC_COLUMNS = ("open", "high", "low", "close", "volume")
 STRATEGIES: dict[str, type[BaseStrategy]] = {
     "baseline_trend": BaselineTrendStrategy,
     "mean_reversion": MeanReversionStrategy,
+    "momentum_pullback_continuation": MomentumPullbackContinuationStrategy,
     "pullback": PullbackStrategy,
     "bollinger_reversion": BollingerReversionStrategy,
     "donchian_breakout": DonchianBreakoutStrategy,

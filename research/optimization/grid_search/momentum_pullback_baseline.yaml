@@ -1,0 +1,15 @@
+strategy: momentum_pullback_continuation
+data: data/BTCUSDT_1m.csv
+timeframe: 15m
+output: research/leaderboards/momentum_pullback_baseline_v1.csv
+report: research/reports/momentum_pullback_baseline_v1.md
+
+min_trades: 0
+
+parameters:
+  take_profit_pct:
+    - 0.012
+  stop_loss_pct:
+    - 0.008
+  max_holding_candles:
+    - 24
