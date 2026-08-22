@@ -6,6 +6,9 @@ from app.research.strategies.bollinger_reversion import BollingerReversionStrate
 from app.research.strategies.donchian_breakout import DonchianBreakoutStrategy
 from app.research.strategies.ema_pullback import EmaPullbackStrategy
 from app.research.strategies.mean_reversion import MeanReversionStrategy
+from app.research.strategies.momentum_pullback_continuation import (
+    MomentumPullbackContinuationStrategy,
+)
 from app.research.strategies.pullback import PullbackStrategy
 from app.research.strategies.volatility_exhaustion import VolatilityExhaustionStrategy
 
@@ -16,6 +19,7 @@ __all__ = [
     "DonchianBreakoutStrategy",
     "EmaPullbackStrategy",
     "MeanReversionStrategy",
+    "MomentumPullbackContinuationStrategy",
     "PullbackStrategy",
     "VolatilityExhaustionStrategy",
 ]
