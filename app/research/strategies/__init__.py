@@ -10,6 +10,7 @@ from app.research.strategies.momentum_pullback_continuation import (
     MomentumPullbackContinuationStrategy,
 )
 from app.research.strategies.pullback import PullbackStrategy
+from app.research.strategies.regime_transition import RegimeTransitionStrategy
 from app.research.strategies.volatility_exhaustion import VolatilityExhaustionStrategy
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "MeanReversionStrategy",
     "MomentumPullbackContinuationStrategy",
     "PullbackStrategy",
+    "RegimeTransitionStrategy",
     "VolatilityExhaustionStrategy",
 ]

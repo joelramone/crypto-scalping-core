@@ -10,6 +10,7 @@ from app.research.config import DEFAULT_DATA_PATH
 from app.research.data_utils import OPTIONAL_SUM_COLUMNS, SUPPORTED_INTERVALS, resample_ohlcv
 from app.research.features import FEATURE_COLUMNS, compute_features
 from app.research.results import print_backtest_metrics, print_dataset_summary
+from app.research.regimes import classify_regimes, compute_regime_features
 from app.research.simulation import simulate_strategy
 from app.research.strategies import (
     BaseStrategy,
@@ -20,6 +21,7 @@ from app.research.strategies import (
     MeanReversionStrategy,
     MomentumPullbackContinuationStrategy,
     PullbackStrategy,
+    RegimeTransitionStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -34,7 +36,14 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "donchian_breakout": DonchianBreakoutStrategy,
     "ema_pullback": EmaPullbackStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
+    "regime_transition": RegimeTransitionStrategy,
 }
+
+
+def add_official_base_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Expose the official causal classifier output under its hypothesis name."""
+    classified = classify_regimes(compute_regime_features(df))
+    return classified.rename(columns={"regime": "base_regime"})
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,6 +123,8 @@ def main() -> None:
     raw_df = load_ohlcv_csv(args.data)
     df = resample_ohlcv(raw_df, args.timeframe)
     featured_df = compute_features(df)
+    if args.strategy == "regime_transition":
+        featured_df = add_official_base_regime(featured_df)
     featured_df = drop_indicator_warmup_rows(featured_df)
 
     print("Research backtester initialized")
