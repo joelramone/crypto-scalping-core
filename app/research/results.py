@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.research.simulation import BacktestMetrics
+from app.research.analysis.trade_diagnostics import TradeDiagnostics
 
 
 def print_dataset_summary(
@@ -36,3 +37,9 @@ def print_backtest_metrics(
     print(f"  Profit Factor: {metrics.profit_factor:.4f}")
     print(f"  Expectancy: {metrics.expectancy:.4f} USDT")
     print(f"  Max Drawdown: {metrics.max_drawdown:.4f} USDT")
+
+
+def print_trade_diagnostics(diagnostics: TradeDiagnostics) -> None:
+    """Print the permanent diagnostics attached to an official result."""
+    for name, value in diagnostics.model_dump().items():
+        print(f"  {name}: {value}")

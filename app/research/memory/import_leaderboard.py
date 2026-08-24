@@ -17,7 +17,7 @@ from app.research.optimizer.grid_search import (
     GridSearchSummary,
     load_grid_search_config,
 )
-from app.research.optimizer.leaderboard import LeaderboardRow
+from app.research.optimizer.leaderboard import DIAGNOSTIC_COLUMNS, LeaderboardRow
 from app.research.simulation import BacktestMetrics
 
 LEADERBOARD_PARAM_COLUMNS = {
@@ -36,6 +36,7 @@ LEADERBOARD_PARAM_COLUMNS = {
     "gross_pnl",
     "net_pnl",
     "average_holding_candles",
+    *DIAGNOSTIC_COLUMNS,
 }
 
 
