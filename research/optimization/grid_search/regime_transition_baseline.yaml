@@ -1,0 +1,17 @@
+strategy: regime_transition
+data: data/BTCUSDT_1m.csv
+timeframe: 15m
+output: research/leaderboards/regime_transition_baseline_v1.csv
+report: research/reports/regime_transition_baseline_v1.md
+period_start: "2025-01-01"
+period_end: "2025-12-31"
+
+min_trades: 0
+
+parameters:
+  take_profit_pct:
+    - 0.012
+  stop_loss_pct:
+    - 0.008
+  max_holding_candles:
+    - 24

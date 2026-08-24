@@ -11,7 +11,7 @@ from typing import Any, Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from app.research.backtester import drop_indicator_warmup_rows, load_ohlcv_csv
+from app.research.backtester import add_official_base_regime, drop_indicator_warmup_rows, load_ohlcv_csv
 from app.research.data_utils import SUPPORTED_INTERVALS, resample_ohlcv
 from app.research.features import compute_features
 from app.research.memory.experiment_writer import write_experiment_memory
@@ -29,6 +29,7 @@ from app.research.strategies import (
     DonchianBreakoutStrategy,
     MeanReversionStrategy,
     MomentumPullbackContinuationStrategy,
+    RegimeTransitionStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -123,6 +124,7 @@ OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "mean_reversion": MeanReversionStrategy,
     "momentum_pullback_continuation": MomentumPullbackContinuationStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
+    "regime_transition": RegimeTransitionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
@@ -135,6 +137,11 @@ PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
         "max_holding_candles": [24],
     },
     "volatility_exhaustion": VOLATILITY_EXHAUSTION_BASELINE,
+    "regime_transition": {
+        "take_profit_pct": [0.012],
+        "stop_loss_pct": [0.008],
+        "max_holding_candles": [24],
+    },
 }
 
 
@@ -149,6 +156,8 @@ class GridSearchConfig(BaseModel):
     config_file: Path | None = None
     min_trades: int = Field(default=MIN_TRADES, ge=0)
     parameters: dict[str, list[Any]] = Field(min_length=1)
+    period_start: str | None = None
+    period_end: str | None = None
 
 
 class GridSearchResult(BaseModel):
@@ -366,11 +375,33 @@ def build_config_from_args(args: argparse.Namespace) -> GridSearchConfig:
     )
 
 
-def load_featured_data(data_path: str | Path, timeframe: str = "1m") -> pd.DataFrame:
+def load_featured_data(
+    data_path: str | Path,
+    timeframe: str = "1m",
+    include_base_regime: bool = False,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> pd.DataFrame:
     """Load OHLCV data and calculate research features once for optimization."""
     raw_df = load_ohlcv_csv(data_path)
+    if period_start is not None or period_end is not None:
+        timestamp_values = raw_df["timestamp"]
+        if pd.api.types.is_numeric_dtype(timestamp_values):
+            numeric_timestamps = pd.to_numeric(timestamp_values, errors="coerce")
+            unit = "ms" if numeric_timestamps.abs().max() >= 1_000_000_000_000 else "s"
+            timestamps = pd.to_datetime(numeric_timestamps, unit=unit, utc=True)
+        else:
+            timestamps = pd.to_datetime(timestamp_values, utc=True)
+        if period_start is not None:
+            raw_df = raw_df.loc[timestamps >= pd.Timestamp(period_start, tz="UTC")]
+            timestamps = timestamps.loc[raw_df.index]
+        if period_end is not None:
+            exclusive_end = pd.Timestamp(period_end, tz="UTC") + pd.Timedelta(days=1)
+            raw_df = raw_df.loc[timestamps < exclusive_end]
     resampled_df = resample_ohlcv(raw_df, timeframe)
     featured_df = compute_features(resampled_df)
+    if include_base_regime:
+        featured_df = add_official_base_regime(featured_df)
     warmed_df = drop_indicator_warmup_rows(featured_df)
     warmed_df.attrs["total_candles"] = len(resampled_df)
     return warmed_df
@@ -391,7 +422,13 @@ def main() -> None:
     print(f"Output path: {config.output}")
     print(f"Parameter combinations: {len(parameter_combinations)}")
 
-    featured_df = load_featured_data(config.data, config.timeframe)
+    featured_df = load_featured_data(
+        config.data,
+        config.timeframe,
+        include_base_regime=config.strategy == "regime_transition",
+        period_start=config.period_start,
+        period_end=config.period_end,
+    )
     strategy_class = OPTIMIZER_STRATEGIES[config.strategy]
 
     summary = run_grid_search(
@@ -404,7 +441,23 @@ def main() -> None:
     )
 
     write_leaderboard_csv(summary.leaderboard_rows, config.output)
-    if config.report is not None and config.strategy == "momentum_pullback_continuation":
+    if config.report is not None and config.strategy == "regime_transition":
+        from app.research.regime_transition_report import build_report, write_report
+
+        if not summary.ranked_results:
+            raise RuntimeError("Regime Transition baseline produced no result")
+        baseline = summary.ranked_results[0]
+        if baseline.diagnostics is None:
+            raise RuntimeError("Regime Transition diagnostics were not populated")
+        report = build_report(
+            result=BacktestResult(trades=baseline.trades, metrics=baseline.metrics),
+            diagnostics=baseline.diagnostics,
+            total_candles=int(featured_df.attrs.get("total_candles", len(featured_df))),
+            featured_rows=len(featured_df),
+            parameters=baseline.parameters,
+        )
+        write_report(report, config.report)
+    elif config.report is not None and config.strategy == "momentum_pullback_continuation":
         from app.research.momentum_pullback_report import (
             build_momentum_pullback_report,
             write_momentum_pullback_report,
