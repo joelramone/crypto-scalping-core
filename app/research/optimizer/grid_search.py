@@ -22,6 +22,7 @@ from app.research.optimizer.leaderboard import (
     write_leaderboard_csv,
 )
 from app.research.simulation import BacktestMetrics, BacktestResult, BacktestTrade, simulate_strategy
+from app.research.analysis.trade_diagnostics import TradeDiagnostics, calculate_trade_diagnostics
 from app.research.strategies import (
     BaseStrategy,
     BollingerReversionStrategy,
@@ -158,6 +159,7 @@ class GridSearchResult(BaseModel):
     metrics: BacktestMetrics
     average_holding_candles: float = Field(ge=0.0)
     trades: list[BacktestTrade] = Field(default_factory=list, exclude=True)
+    diagnostics: TradeDiagnostics | None = None
 
 
 class GridSearchSummary(BaseModel):
@@ -196,6 +198,10 @@ def run_grid_search(
         print(f"Progress: {index}/{total_combinations}")
         strategy = strategy_class(**parameters)
         backtest_result = simulate_strategy(df, strategy)
+        entry_signals = strategy.generate_entries(df).reindex(df.index, fill_value=False)
+        raw_signal_indices = [
+            index for index, value in enumerate(entry_signals) if bool(value)
+        ]
         metrics = backtest_result.metrics
         if metrics.total_trades < min_trades:
             continue
@@ -211,6 +217,9 @@ def run_grid_search(
                     else 0.0
                 ),
                 trades=backtest_result.trades,
+                diagnostics=calculate_trade_diagnostics(
+                    backtest_result.trades, raw_signal_indices
+                ),
             )
         )
 
@@ -224,6 +233,7 @@ def run_grid_search(
         timeframe,
         ranked_pairs,
         [result.average_holding_candles for result in all_results],
+        [result.diagnostics for result in all_results if result.diagnostics is not None],
     )
 
     return GridSearchSummary(

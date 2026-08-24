@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.research.optimizer.leaderboard import DIAGNOSTIC_COLUMNS
+
 ROOT_DIR = Path(__file__).resolve().parents[3]
 LEADERBOARD_DIR = ROOT_DIR / "research" / "leaderboards"
 
@@ -21,6 +23,7 @@ CORE_COLUMNS = {
     "gross_pnl",
     "net_pnl",
     "source_file",
+    *DIAGNOSTIC_COLUMNS,
 }
 
 NUMERIC_BASE_COLUMNS = {
@@ -32,6 +35,7 @@ NUMERIC_BASE_COLUMNS = {
     "max_drawdown",
     "gross_pnl",
     "net_pnl",
+    *(column for column in DIAGNOSTIC_COLUMNS if column not in {"monthly_diagnostics", "best_month", "worst_month"}),
 }
 
 
