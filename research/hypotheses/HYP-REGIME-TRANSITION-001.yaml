@@ -1,0 +1,182 @@
+hypothesis_id: HYP-REGIME-TRANSITION-001
+status: PRE_REGISTERED_NOT_TESTED
+purpose: discovery_baseline
+strategy_family: STRATEGY_FAMILY_4_REGIME_TRANSITION_DIRECTIONAL_STATE_CHANGE
+symbol: BTCUSDT
+timeframe: 15m
+direction: long_only
+
+dataset_boundaries:
+  discovery:
+    path: data/BTCUSDT_1m.csv
+    period_start: "2025-01-01"
+    period_end: "2025-12-31"
+    period_end_inclusive: true
+    classification: DISCOVERY_USED
+    permitted_experiments: 1
+    resample_timeframe: 15m
+  prohibited:
+    - period_start: "2026-01-01"
+      period_end: "2026-08-05"
+      period_end_inclusive: true
+      reason: previously_used_validation_or_research
+    - strictly_after: "2026-08-05"
+      reason: reserved_by_HYP-DONCHIAN-HIGHVOL-001
+
+regime_dependency:
+  implementation: existing_causal_regime_implementation
+  modification_allowed: false
+  definitions: existing_definitions_exactly
+  base_regimes:
+    - TREND_UP
+    - TREND_DOWN
+    - RANGE
+    - NEUTRAL
+  available_overlay: is_high_volatility
+  overlay_used_by_signal: false
+  existing_causal_features:
+    - EMA20
+    - EMA50
+    - EMA200
+    - EMA_slopes
+    - EMA_separations
+    - ADX14
+    - realized_volatility
+    - return_4
+    - return_12
+    - return_24
+
+transition_definition:
+  evaluation_candle: completed_candle_t
+  previous_condition:
+    field: base_regime[t-1]
+    operator: not_equal
+    value: TREND_UP
+  current_condition:
+    field: base_regime[t]
+    operator: equal
+    value: TREND_UP
+  logical_operator: AND
+  exact_expression: base_regime[t-1] != TREND_UP AND base_regime[t] == TREND_UP
+  persistent_state_signal: false
+  trend_up_to_trend_up_creates_signal: false
+  entry_execution: official_simulator_at_close[t]
+  future_information_allowed: false
+
+frozen_exits:
+  take_profit_pct: 0.012
+  stop_loss_pct: 0.008
+  max_holding_candles: 24
+  generate_exits: false
+  optimization_allowed: false
+
+diagnostic_requirements:
+  implementation: permanent_TradeDiagnostics
+  mandatory: true
+  gross_net:
+    - gross_pnl_before_fees
+    - total_fees
+    - net_pnl
+    - gross_expectancy
+    - fee_expectancy
+    - net_expectancy
+    - gross_profit_factor
+    - net_profit_factor
+  payoff:
+    - wins
+    - losses
+    - flats
+    - win_rate
+    - average_winner
+    - median_winner
+    - average_loser
+    - median_loser
+    - payoff_ratio
+    - break_even_win_rate
+    - actual_minus_break_even_win_rate
+  exits:
+    TP: [count, pct, pnl]
+    SL: [count, pct, pnl]
+    max_holding: [count, pct, pnl]
+    holding_candles: [average, median, p25, p75, p95]
+  overlap:
+    - raw_entry_signals
+    - completed_trades
+    - suppressed_signals
+    - suppression_rate
+    - raw_signals_per_opened_trade
+  monthly:
+    - trades
+    - profit_factor
+    - expectancy
+    - net_pnl
+    - positive_months
+    - negative_months
+    - positive_pnl_concentration
+    - positive_pnl_concentration_top_2_months
+  signal_independence:
+    expectation: raw_signal_frequency_materially_lower_than_persistent_TREND_UP_state_signals
+    numeric_pass_threshold: null
+    classification: descriptive_only
+    required_fields: [raw_entry_signals, completed_trades, suppression_rate]
+
+verdict_rules:
+  evaluation_order:
+    - INSUFFICIENT_SAMPLE
+    - BASELINE_REJECT
+    - BASELINE_CANDIDATE
+  insufficient_sample:
+    verdict: INSUFFICIENT_SAMPLE
+    condition: completed_trades < 100
+  baseline_reject:
+    verdict: BASELINE_REJECT
+    minimum_completed_trades_for_net_rules: 100
+    any_net_rule:
+      - net_profit_factor <= 1
+      - net_expectancy <= 0
+      - net_pnl <= 0
+    independent_rejection_rules:
+      - gross_expectancy <= 0
+      - positive_pnl_concentration_top_2_months > 0.80
+  baseline_candidate:
+    verdict: BASELINE_CANDIDATE
+    all:
+      - completed_trades >= 100
+      - gross_expectancy > 0
+      - net_profit_factor > 1
+      - net_expectancy > 0
+      - net_pnl > 0
+      - positive_pnl_concentration_top_2_months <= 0.80
+  optimization_after_baseline_reject: prohibited
+
+anti_tuning_constraints:
+  after_observing_2025_baseline:
+    changing_ADX_threshold: prohibited
+    changing_EMA_periods: prohibited
+    changing_regime_definitions: prohibited
+    adding_HIGH_VOLATILITY_conditions: prohibited
+    adding_return_filters: prohibited
+    adding_volume_filters: prohibited
+    adding_candle_filters: prohibited
+    changing_transition_types: prohibited
+    changing_TP_SL_or_holding_to_rescue_rejection: prohibited
+  additional_prohibited_signal_components:
+    - breakout_condition
+    - RSI
+    - volume_filter
+    - close_location_filter
+    - Bollinger_Bands
+    - ATR_gate
+    - HIGH_VOLATILITY_filter
+    - return_threshold
+    - candle_confirmation
+    - quality_score
+    - cooldown_threshold
+    - machine_learning
+    - feature_weighting
+  regime_threshold_optimization: prohibited
+  alternate_ADX_thresholds: prohibited
+  EMA_period_changes: prohibited
+  volatility_percentile_changes: prohibited
+  regime_classification_tuning: prohibited
+  termination_rule: if_baseline_fails_this_exact_hypothesis_ends
