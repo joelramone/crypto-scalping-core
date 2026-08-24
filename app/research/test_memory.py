@@ -296,7 +296,11 @@ def test_optimizer_failure_does_not_create_experiment_record(
 
     monkeypatch.setattr(grid_search_module, "parse_args", lambda: argparse.Namespace())
     monkeypatch.setattr(grid_search_module, "build_config_from_args", lambda args: config)
-    monkeypatch.setattr(grid_search_module, "load_featured_data", lambda data, timeframe: object())
+    monkeypatch.setattr(
+        grid_search_module,
+        "load_featured_data",
+        lambda data, timeframe, **kwargs: object(),
+    )
 
     def _boom(**kwargs):
         raise RuntimeError("optimizer failed")
