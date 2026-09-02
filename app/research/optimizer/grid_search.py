@@ -30,6 +30,7 @@ from app.research.strategies import (
     MeanReversionStrategy,
     MomentumPullbackContinuationStrategy,
     RegimeTransitionStrategy,
+    ShortRegimeTransitionStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -125,6 +126,7 @@ OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "momentum_pullback_continuation": MomentumPullbackContinuationStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
     "regime_transition": RegimeTransitionStrategy,
+    "short_regime_transition": ShortRegimeTransitionStrategy,
 }
 
 PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
@@ -138,6 +140,11 @@ PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     },
     "volatility_exhaustion": VOLATILITY_EXHAUSTION_BASELINE,
     "regime_transition": {
+        "take_profit_pct": [0.012],
+        "stop_loss_pct": [0.008],
+        "max_holding_candles": [24],
+    },
+    "short_regime_transition": {
         "take_profit_pct": [0.012],
         "stop_loss_pct": [0.008],
         "max_holding_candles": [24],
@@ -425,7 +432,7 @@ def main() -> None:
     featured_df = load_featured_data(
         config.data,
         config.timeframe,
-        include_base_regime=config.strategy == "regime_transition",
+        include_base_regime=config.strategy in {"regime_transition", "short_regime_transition"},
         period_start=config.period_start,
         period_end=config.period_end,
     )

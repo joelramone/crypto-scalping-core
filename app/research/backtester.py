@@ -22,6 +22,7 @@ from app.research.strategies import (
     MomentumPullbackContinuationStrategy,
     PullbackStrategy,
     RegimeTransitionStrategy,
+    ShortRegimeTransitionStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -37,6 +38,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "ema_pullback": EmaPullbackStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
     "regime_transition": RegimeTransitionStrategy,
+    "short_regime_transition": ShortRegimeTransitionStrategy,
 }
 
 
@@ -123,7 +125,7 @@ def main() -> None:
     raw_df = load_ohlcv_csv(args.data)
     df = resample_ohlcv(raw_df, args.timeframe)
     featured_df = compute_features(df)
-    if args.strategy == "regime_transition":
+    if args.strategy in {"regime_transition", "short_regime_transition"}:
         featured_df = add_official_base_regime(featured_df)
     featured_df = drop_indicator_warmup_rows(featured_df)
 
