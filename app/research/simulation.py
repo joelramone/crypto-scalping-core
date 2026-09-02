@@ -17,10 +17,11 @@ MAX_HOLDING_CANDLES = 30
 FIXED_NOTIONAL_USDT = 100.0
 
 ExitReason = Literal["take_profit", "stop_loss", "strategy_exit", "max_holding"]
+TradeSide = Literal["long", "short"]
 
 
 class BacktestTrade(BaseModel):
-    """A completed simulated long trade."""
+    """A completed simulated trade."""
 
     entry_index: int = Field(ge=0)
     exit_index: int = Field(ge=0)
@@ -33,6 +34,7 @@ class BacktestTrade(BaseModel):
     fees: float = Field(ge=0.0)
     net_pnl: float
     exit_reason: ExitReason
+    side: TradeSide = "long"
 
     @computed_field
     @property
@@ -75,7 +77,7 @@ def simulate_strategy(
     fee_rate: float = DEFAULT_FEE_RATE,
     fixed_notional: float = FIXED_NOTIONAL_USDT,
 ) -> BacktestResult:
-    """Run a long-only research strategy on featured candles."""
+    """Run a single-direction research strategy on featured candles."""
     simulation_df = df.copy()
     entry_signals = strategy.generate_entries(simulation_df).reindex(
         simulation_df.index,
@@ -87,6 +89,14 @@ def simulate_strategy(
     )
 
     trades: list[BacktestTrade] = []
+    direction_value = getattr(strategy, "direction")
+    side: TradeSide = (
+        direction_value()
+        if callable(direction_value)
+        else ("long" if direction_value == "long_only" else direction_value)
+    )
+    if side not in ("long", "short"):
+        raise ValueError(f"Unsupported strategy direction: {direction_value!r}")
     index = 0
     last_entry_index = len(simulation_df) - 2
 
@@ -99,8 +109,11 @@ def simulate_strategy(
         entry_index = index
         entry_row = row
         entry_price = float(entry_row["close"])
-        take_profit_price = entry_price * (1.0 + strategy.take_profit_pct())
-        stop_loss_price = entry_price * (1.0 - strategy.stop_loss_pct())
+        multiplier = 1.0 if side == "long" else -1.0
+        take_profit_price = entry_price * (
+            1.0 + multiplier * strategy.take_profit_pct()
+        )
+        stop_loss_price = entry_price * (1.0 - multiplier * strategy.stop_loss_pct())
         max_exit_index = min(
             entry_index + strategy.max_holding_candles(),
             len(simulation_df) - 1,
@@ -112,12 +125,22 @@ def simulate_strategy(
 
         for candidate_index in range(entry_index + 1, max_exit_index + 1):
             candidate = simulation_df.iloc[candidate_index]
-            if float(candidate["low"]) <= stop_loss_price:
+            stop_loss_triggered = (
+                float(candidate["low"]) <= stop_loss_price
+                if side == "long"
+                else float(candidate["high"]) >= stop_loss_price
+            )
+            if stop_loss_triggered:
                 exit_index = candidate_index
                 exit_price = stop_loss_price
                 exit_reason = "stop_loss"
                 break
-            if float(candidate["high"]) >= take_profit_price:
+            take_profit_triggered = (
+                float(candidate["high"]) >= take_profit_price
+                if side == "long"
+                else float(candidate["low"]) <= take_profit_price
+            )
+            if take_profit_triggered:
                 exit_index = candidate_index
                 exit_price = take_profit_price
                 exit_reason = "take_profit"
@@ -129,7 +152,7 @@ def simulate_strategy(
                 break
 
         quantity = fixed_notional / entry_price
-        gross_pnl = (exit_price - entry_price) * quantity
+        gross_pnl = multiplier * (exit_price - entry_price) * quantity
         fees = fixed_notional * fee_rate + (quantity * exit_price) * fee_rate
         net_pnl = gross_pnl - fees
         exit_row = simulation_df.iloc[exit_index]
@@ -147,6 +170,7 @@ def simulate_strategy(
                 fees=fees,
                 net_pnl=net_pnl,
                 exit_reason=exit_reason,
+                side=side,
             )
         )
         index = exit_index + 1

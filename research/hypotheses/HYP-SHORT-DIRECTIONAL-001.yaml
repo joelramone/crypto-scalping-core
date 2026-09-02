@@ -1,0 +1,98 @@
+hypothesis_id: HYP-SHORT-DIRECTIONAL-001
+status: PRE_REGISTERED_NOT_TESTED
+purpose: directional_asymmetry_discovery_baseline
+strategy_family: STRATEGY_FAMILY_5_SHORT_DIRECTIONAL
+symbol: BTCUSDT
+timeframe: 15m
+direction: short_only
+
+dataset_boundaries:
+  discovery:
+    path: data/BTCUSDT_1m.csv
+    period_start: "2025-01-01"
+    period_end: "2025-12-31"
+    period_end_inclusive: true
+    classification: DISCOVERY_USED
+    resample_timeframe: 15m
+  prohibited:
+    - period_start: "2026-01-01"
+      period_end: "2026-08-05"
+      period_end_inclusive: true
+    - strictly_after: "2026-08-05"
+      classification: RESERVED_DO_NOT_ACCESS
+
+regime_dependency:
+  implementation: existing_causal_base_regime_implementation
+  modification_allowed: false
+
+transition_definition:
+  evaluation_candle: completed_candle_t
+  previous_condition: base_regime[t-1] != TREND_DOWN
+  current_condition: base_regime[t] == TREND_DOWN
+  logical_operator: AND
+  exact_expression: base_regime[t-1] != TREND_DOWN AND base_regime[t] == TREND_DOWN
+  direction: short_only
+  entry_execution: close[t]
+  future_information_allowed: false
+
+signal_filters:
+  enabled: false
+  prohibited:
+    - Donchian
+    - Bollinger
+    - RSI
+    - volume
+    - ATR_filter
+    - HIGH_VOLATILITY
+    - return_threshold
+    - candle_confirmation
+    - quality_score
+    - close_location
+    - cooldown
+    - machine_learning
+
+frozen_exits:
+  take_profit_pct: 0.012
+  stop_loss_pct: 0.008
+  max_holding_candles: 24
+  generate_exits: false
+
+verdict_rules:
+  evaluation_order: [INSUFFICIENT_SAMPLE, BASELINE_REJECT, BASELINE_CANDIDATE]
+  insufficient_sample:
+    verdict: INSUFFICIENT_SAMPLE
+    condition: completed_trades < 100
+  baseline_reject:
+    verdict: BASELINE_REJECT
+    minimum_completed_trades: 100
+    any:
+      - gross_expectancy <= 0
+      - net_profit_factor <= 1
+      - net_expectancy <= 0
+      - net_pnl <= 0
+      - positive_pnl_concentration_top_2_months > 0.80
+  baseline_candidate:
+    verdict: BASELINE_CANDIDATE
+    all:
+      - completed_trades >= 100
+      - gross_expectancy > 0
+      - net_profit_factor > 1
+      - net_expectancy > 0
+      - net_pnl > 0
+      - positive_pnl_concentration_top_2_months <= 0.80
+
+anti_tuning:
+  begins_after_observing_2025_results: true
+  rescue_variants_prohibited:
+    - regime_threshold_changes
+    - exit_changes
+    - filters
+    - timeframe_changes
+    - transition_changes
+    - volatility_conditions
+    - candle_confirmation
+    - multiple_variants
+  termination_rule: if_rejected_this_exact_hypothesis_ends
+
+implementation_authorized: false
+market_backtest_authorized: false

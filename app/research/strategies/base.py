@@ -1,12 +1,17 @@
 """Base strategy interface for research backtests."""
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 import pandas as pd
 
 
 class BaseStrategy(ABC):
     """Minimal interface every research strategy must implement."""
+
+    def direction(self) -> Literal["long", "short"]:
+        """Return the execution direction; existing strategies default to long."""
+        return "long"
 
     def take_profit_pct(self) -> float:
         """Return the take-profit percentage used by the simulator."""
@@ -22,7 +27,7 @@ class BaseStrategy(ABC):
 
     @abstractmethod
     def generate_entries(self, df: pd.DataFrame) -> pd.Series:
-        """Return a boolean Series where True marks a long entry signal."""
+        """Return a boolean Series where True marks an entry signal."""
 
     @abstractmethod
     def generate_exits(self, df: pd.DataFrame) -> pd.Series:
