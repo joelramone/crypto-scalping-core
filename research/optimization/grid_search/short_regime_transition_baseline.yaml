@@ -4,6 +4,12 @@ timeframe: 15m
 output: research/leaderboards/short_regime_transition_baseline_v1.csv
 period_start: "2025-01-01"
 period_end: "2025-12-31"
+hypothesis_id: HYP-SHORT-DIRECTIONAL-001
+preregistered: true
+anti_tuning: true
+final_status: CLOSED_REJECTED
+verdict: BASELINE_REJECT
+failure_classification: FEE_DOMINATED
 
 min_trades: 0
 
