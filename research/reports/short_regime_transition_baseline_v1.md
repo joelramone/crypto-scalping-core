@@ -1,175 +1,117 @@
 # HYP-SHORT-DIRECTIONAL-001 Baseline Closure
 
-## Research identity
+## Research identity and final verdict
 
 - **Hypothesis:** `HYP-SHORT-DIRECTIONAL-001`
 - **Experiment:** `EXP-000021`
 - **Strategy:** `short_regime_transition`
-- **Configuration:** `research/optimization/grid_search/short_regime_transition_baseline.yaml`
-- **Parameter combinations:** `1`
+- **Timeframe:** `15m`
+- **Parameter combinations:** `1` (one frozen baseline configuration)
 - **Verdict:** `BASELINE_REJECT`
 - **Status:** `CLOSED_REJECTED`
+- **Primary failure classification:** `FEE_DOMINATED`
+- **Research action:** `NO_RESCUE_AUTHORIZED`
 
-## Deterministic verdict
+The 331 completed trades clear the minimum-sample gate, but net profit factor,
+net expectancy, and net PnL fail the preregistered baseline gates. This exact
+hypothesis is closed and must not be tuned or rescued.
 
-The observed optimizer summary records 331 completed trades, so the
-`completed_trades < 100` insufficient-sample rule does not apply. The baseline
-is rejected independently by all three available net-performance gates:
+## Authoritative diagnostics
 
-- `net_profit_factor = 0.9717 <= 1`
-- `net_expectancy = -0.0106 <= 0`
-- `net_pnl = -3.5177 <= 0`
+These values are persisted from the locally observed stored artifacts supplied
+for closure. They were not recomputed from market data.
 
-The authoritative preregistration requires `BASELINE_REJECT` when any one of
-those conditions is true. Relative performance against another strategy does
-not alter this verdict.
+| Category | Metric | Value |
+| --- | --- | ---: |
+| Trades | completed / wins / losses / flats | 331 / 143 / 188 / 0 |
+| Trades | win rate | 0.432024 |
+| Gross | PnL before fees | 22.95316 |
+| Gross | expectancy | +0.069345 |
+| Gross | profit / loss before fees | 132.501422 / 109.548262 |
+| Gross | profit factor | 1.209526 |
+| Costs | total fees | 26.470819 |
+| Costs | fee expectancy | 0.079972 |
+| Net | PnL | -3.517658 |
+| Net | expectancy | -0.010627 |
+| Net | profit factor | 0.971714 |
+| Risk | max drawdown | 28.0196 |
+| Payoff | average / median winner | 0.845043 / 1.12048 |
+| Payoff | average / median loser | -0.661483 / -0.88032 |
+| Payoff | payoff ratio | 1.277498 |
+| Payoff | break-even win rate | 0.439078 |
+| Payoff | actual minus break-even win rate | -0.007054 |
+| Holding | average / median candles | 14.407855 / 13 |
+| Holding | P25 / P75 / P95 | 6 / 24 / 24 |
+| Overlap | raw signals / suppressed signals | 464 / 133 |
+| Overlap | suppression rate | 0.286638 |
+| Overlap | raw signals per opened trade | 1.401813 |
 
-## Artifact integrity notice
+## Exit diagnostics
 
-At finalization time, the repository does not contain the referenced
-`research/journal/EXP-000021.md` or
-`research/leaderboards/short_regime_transition_baseline_v1.csv`, and
-`research/memory/index.csv` has no `EXP-000021` row. No stored trade ledger or
-serialized `TradeDiagnostics` for `EXP-000021` is present elsewhere under
-`research/`.
+| Exit | Count | Percentage | Net PnL |
+| --- | ---: | ---: | ---: |
+| take_profit | 95 | 0.287009 | 106.4456 |
+| stop_loss | 117 | 0.353474 | -102.99744 |
+| max_holding | 119 | 0.359517 | -6.965818 |
+| strategy_exit | 0 | 0 | 0 |
 
-Consequently, only the human-observed optimizer summary supplied for this
-closure is recorded below. Missing diagnostics are deliberately marked
-`NOT AVAILABLE IN STORED ARTIFACTS`; they are not estimated, reconstructed, or
-silently invented. Reproducing them would require another market-data run,
-which this closure explicitly prohibits.
+## Monthly diagnostics
 
-## Gross edge
+| Month | Trades | PF | Expectancy | Net PnL | Profitable |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| 2025-01 | 24 | 1.1080167185 | 0.0475446388 | 1.1410713311 | true |
+| 2025-02 | 38 | 1.5552651241 | 0.1669816638 | 6.3453032232 | true |
+| 2025-03 | 25 | 0.6703554808 | -0.1615508792 | -4.0387719809 | false |
+| 2025-04 | 17 | 0.5468118670 | -0.2037771966 | -3.4642123421 | false |
+| 2025-05 | 29 | 1.2708575697 | 0.0696874859 | 2.0209370901 | true |
+| 2025-06 | 26 | 0.4092951806 | -0.3251180241 | -8.4530686272 | false |
+| 2025-07 | 21 | 0.3734479932 | -0.2493174879 | -5.2356672457 | false |
+| 2025-08 | 31 | 1.0433049809 | 0.0144110254 | 0.4467417862 | true |
+| 2025-09 | 20 | 0.2499331738 | -0.2785668176 | -5.5713363520 | false |
+| 2025-10 | 31 | 1.4198196025 | 0.1489477890 | 4.6173814586 | true |
+| 2025-11 | 37 | 1.8322988164 | 0.2598249116 | 9.6135217305 | true |
+| 2025-12 | 32 | 0.9220328464 | -0.0293612035 | -0.9395585107 | false |
 
-| Metric | EXP-000021 |
-| --- | ---: |
-| gross_pnl_before_fees | NOT AVAILABLE IN STORED ARTIFACTS |
-| gross_expectancy | NOT AVAILABLE IN STORED ARTIFACTS |
-| gross_profit_before_fees | NOT AVAILABLE IN STORED ARTIFACTS |
-| gross_loss_before_fees | NOT AVAILABLE IN STORED ARTIFACTS |
-| gross_profit_factor | NOT AVAILABLE IN STORED ARTIFACTS |
+There were 6 positive and 6 negative months (profitable-month percentage
+`0.5`). The best month was `2025-11`, the worst was `2025-06`, and top-two
+positive-PnL concentration was `0.659866`.
 
-No conclusion about the presence or absence of raw gross edge is supportable
-from the retained values.
+## Primary failure classification
 
-## Cost burden
+**`FEE_DOMINATED`.** Gross expectancy was positive at `+0.069345`, but fee
+expectancy was higher at `0.079972`, producing net expectancy of `-0.010627`.
+Likewise, gross profit factor was `1.209526` while net profit factor fell to
+`0.971714`. The gross edge is positive but insufficient to overcome the frozen
+transaction-cost model.
 
-| Metric | EXP-000021 |
-| --- | ---: |
-| total_fees | NOT AVAILABLE IN STORED ARTIFACTS |
-| fee_expectancy | NOT AVAILABLE IN STORED ARTIFACTS |
+This is not `NO_RAW_EDGE`; positive gross expectancy and gross PF above one
+show a raw gross edge. `POOR_PAYOFF` is not the primary failure: the payoff
+ratio was `1.277498`. The raw win rate alone does not support `LOW_HIT_RATE`;
+the relevant actual-minus-break-even deficit was only `-0.007054`.
 
-Fee domination cannot be established from the retained values.
+Secondary observations are moderate follow-through weakness and continuing
+temporal instability.
 
-## Net performance
+## Directional asymmetry — discovery knowledge only
 
-| Metric | EXP-000021 |
-| --- | ---: |
-| completed_trades | 331 |
-| win_rate | 43.20% |
-| net_profit_factor | 0.9717 |
-| net_expectancy | -0.0106 |
-| net_pnl | -3.5177 |
+Relative to the frozen bullish transition baseline (`EXP-000020`), the 2025
+short baseline exhibited measurable directional asymmetry: higher gross PF,
+higher gross expectancy, higher payoff ratio, lower break-even win rate, a
+smaller actual-versus-break-even win-rate deficit, higher net PF, less-negative
+net expectancy and PnL, higher take-profit percentage, lower max-holding
+percentage, shorter average and median holding, lower signal suppression, more
+profitable months, and lower top-two positive-PnL concentration.
 
-The baseline loses after costs on both a per-trade and aggregate basis, and its
-net profit factor is below one.
+This finding is discovery knowledge only. It is not strategy approval,
+validation, permission to tune Family #5, or permission to use 2026 or reserved
+data. Both directional baselines have verdict `BASELINE_REJECT`.
 
-## Payoff structure
-
-Wins, losses, flats, average and median winner, average and median loser,
-payoff ratio, break-even win rate, and actual-minus-break-even win rate are
-`NOT AVAILABLE IN STORED ARTIFACTS`. The rounded top-level win rate is not used
-to reverse-engineer permanent diagnostics.
-
-## Exit and follow-through structure
-
-Counts, percentages, and net PnL for `take_profit`, `stop_loss`, `max_holding`,
-and `strategy_exit` are `NOT AVAILABLE IN STORED ARTIFACTS`. Average, median,
-P25, P75, and P95 holding periods are also unavailable. Follow-through and
-max-holding dependency therefore cannot be classified responsibly.
-
-## Signal overlap
-
-Raw entry signals, suppressed signals, suppression rate, and raw signals per
-opened trade are `NOT AVAILABLE IN STORED ARTIFACTS`. The completed-trade count
-is 331. Signal overlap cannot be classified from this count alone.
-
-## Monthly stability
-
-Per-month trades, profit factor, expectancy, net PnL, and profitability for the
-twelve 2025 months are `NOT AVAILABLE IN STORED ARTIFACTS`. Positive months,
-negative months, profitable-month percentage, best month, worst month, and
-positive-PnL concentration in the top two months are likewise unavailable.
-Temporal stability and the concentration rejection gate cannot be evaluated;
-the three independent net-performance rejection gates already determine the
-verdict.
-
-## Long versus short asymmetry
-
-The long values below are the frozen `EXP-000020` metrics supplied for this
-closure. Comparisons are limited to short metrics that were retained.
-
-| Metric | Long EXP-000020 | Short EXP-000021 | Measured asymmetry |
-| --- | ---: | ---: | --- |
-| completed trades | 309 | 331 | Short higher by 22 |
-| gross profit factor | 1.1673959163 | NOT AVAILABLE | Not measurable |
-| gross expectancy | 0.0542618354 | NOT AVAILABLE | Not measurable |
-| total fees | 24.7267067629 | NOT AVAILABLE | Not measurable |
-| fee expectancy | 0.0800217047 | NOT AVAILABLE | Not measurable |
-| net profit factor | 0.9297643119 | 0.9717 | Short higher by 0.0419356881; both below 1 |
-| net expectancy | -0.0257598693 | -0.0106 | Short less negative by 0.0151598693; both negative |
-| net PnL | -7.9597996163 | -3.5177 | Short less negative by 4.4420996163; both negative |
-| win rate | 45.95469256% | 43.20% | Short lower by 2.75469256 percentage points |
-| payoff ratio | 1.0934552119 | NOT AVAILABLE | Not measurable |
-| actual minus break-even WR | -1.81322692 pp | NOT AVAILABLE | Not measurable |
-| max-holding dependency | 42.07119741% | NOT AVAILABLE | Not measurable |
-| average holding | 16.4336569579 | NOT AVAILABLE | Not measurable |
-| median holding | 20 | NOT AVAILABLE | Not measurable |
-| holding P75 | 24 | NOT AVAILABLE | Not measurable |
-| holding P95 | 24 | NOT AVAILABLE | Not measurable |
-| suppression rate | 36.28865979% | NOT AVAILABLE | Not measurable |
-| raw signals/opened trade | 1.5695792880 | NOT AVAILABLE | Not measurable |
-| positive months | 5 | NOT AVAILABLE | Not measurable |
-| negative months | 7 | NOT AVAILABLE | Not measurable |
-| profitable-month percentage | 41.66666667% | NOT AVAILABLE | Not measurable |
-| top-two positive-PnL concentration | 84.9006% | NOT AVAILABLE | Not measurable |
-| verdict | BASELINE_REJECT | BASELINE_REJECT | Same deterministic outcome |
-
-The short baseline's less negative net metrics are relative differences only;
-they are not strategy success. Gross edge, fee burden, payoff quality,
-actual-minus-break-even win rate, max-holding dependency, holding duration,
-signal suppression, and monthly stability cannot be compared without the
-missing permanent diagnostics.
-
-## Failure classification
-
-**Classification: `MIXED` (net-negative performance and lower hit rate versus
-the frozen long baseline).** The directly supported failures are a net profit
-factor of 0.9717, net expectancy of -0.0106, and net PnL of -3.5177 across 331
-trades. The 43.20% win rate is 2.75469256 percentage points below the long
-baseline, but `LOW_HIT_RATE` cannot be isolated without the short break-even
-win rate. `NO_RAW_EDGE`, `FEE_DOMINATED`, `POOR_PAYOFF`, `NO_FOLLOW_THROUGH`,
-`TEMPORAL_INSTABILITY`, and `SIGNAL_OVERLAP` are not assigned because their
-required permanent diagnostics are unavailable.
-
-## Research closure
-
-`HYP-SHORT-DIRECTIONAL-001` is closed as `CLOSED_REJECTED` under experiment
-`EXP-000021` with verdict `BASELINE_REJECT`.
-
-This exact hypothesis must not be rescued through parameter tuning, filters,
-exit changes, regime threshold changes, timeframe changes, volatility
-conditions, or alternate transition definitions.
-
-No new experiment was run. No parameter was changed. No strategy code was
-modified. No grid search, Monte Carlo, walk-forward, external validation,
-alternate short rule, or Family #5 optimization was executed.
-
-## Data boundaries
+## Data governance and closure
 
 - **2025:** `DISCOVERY_USED`
 - **2026-01-01 through 2026-08-05:** `NOT USED`
 - **post-2026-08-05:** `RESERVED / NOT ACCESSED`
 
-No 2026 data was accessed during finalization, including reserved data after
-2026-08-05.
+Experiment closed under preregistered anti-tuning rules. No rescue or parameter
+optimization is authorized. No market dataset was opened to produce this
+closure artifact.

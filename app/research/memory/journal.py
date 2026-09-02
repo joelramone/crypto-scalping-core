@@ -64,6 +64,11 @@ def _best_metrics_lines(summary: GridSearchSummary) -> list[str]:
 
 def _build_objective(config: GridSearchConfig) -> str:
     """Create a simple experiment objective from config."""
+    if _is_no_rescue_closure(config):
+        return (
+            f"Evaluate the one frozen, preregistered baseline configuration for "
+            f"{config.hypothesis_id} on {config.timeframe} candles."
+        )
     return (
         f"Evaluate {config.strategy} on {config.timeframe} candles using the optimizer "
         f"to identify stronger parameter combinations on {config.data}."
@@ -72,6 +77,11 @@ def _build_objective(config: GridSearchConfig) -> str:
 
 def _build_hypothesis(config: GridSearchConfig) -> str:
     """Create a simple experiment hypothesis from config."""
+    if _is_no_rescue_closure(config):
+        return (
+            f"{config.hypothesis_id} is one frozen baseline configuration, not a parameter "
+            "sweep or an attempt to identify stronger settings."
+        )
     parameter_count = sum(len(values) for values in config.parameters.values())
     return (
         f"A structured sweep across {parameter_count} parameter values may uncover "
@@ -100,8 +110,24 @@ def _build_results(summary: GridSearchSummary) -> str:
     return "\n".join(lines)
 
 
-def _build_lessons_learned(summary: GridSearchSummary) -> str:
+def _is_no_rescue_closure(config: GridSearchConfig) -> bool:
+    """Return whether final preregistration metadata closes further tuning."""
+    rejected = config.final_status == "CLOSED_REJECTED" or config.verdict == "BASELINE_REJECT"
+    return config.preregistered and config.anti_tuning and rejected
+
+
+def _closure_recommendation() -> str:
+    """Return the deterministic recommendation for an anti-tuning closure."""
+    return (
+        "- Experiment closed under preregistered anti-tuning rules. No rescue or "
+        "parameter optimization is authorized."
+    )
+
+
+def _build_lessons_learned(config: GridSearchConfig, summary: GridSearchSummary) -> str:
     """Render a lightweight lessons-learned section."""
+    if _is_no_rescue_closure(config):
+        return _closure_recommendation()
     if not summary.ranked_results:
         return (
             "- The current search space did not produce any configurations that met the "
@@ -121,6 +147,8 @@ def _build_lessons_learned(summary: GridSearchSummary) -> str:
 
 def _build_next_experiments(config: GridSearchConfig, summary: GridSearchSummary) -> str:
     """Suggest the next research steps in simple heuristic form."""
+    if _is_no_rescue_closure(config):
+        return _closure_recommendation()
     if not summary.ranked_results:
         return (
             f"- Re-run {config.strategy} on {config.timeframe} with a wider parameter grid.\n"
@@ -158,6 +186,11 @@ def build_experiment_journal(
         f"- Leaderboard File: {config.output}",
         f"- Source: {source}",
         f"- Optimizer was not rerun: {'yes' if not optimizer_rerun else 'no'}",
+        f"- Hypothesis ID: {config.hypothesis_id or ''}",
+        f"- Preregistered: {'yes' if config.preregistered else 'no'}",
+        f"- Verdict: {config.verdict or ''}",
+        f"- Final Status: {config.final_status or ''}",
+        f"- Failure Classification: {config.failure_classification or ''}",
         "",
         "## Objective",
         _build_objective(config),
@@ -188,13 +221,15 @@ def build_experiment_journal(
         "\n".join(_best_metrics_lines(summary)),
         "",
         "## Lessons Learned",
-        _build_lessons_learned(summary),
+        _build_lessons_learned(config, summary),
         "",
         "## Deterministic Interpretation",
         (
             "The strongest observed configuration is treated as the current boundary of "
             "known performance within this exact experiment grid."
-            if summary.ranked_results
+            if summary.ranked_results and not _is_no_rescue_closure(config)
+            else "This rejected preregistered baseline is closed and cannot be tuned or rescued."
+            if _is_no_rescue_closure(config)
             else "This experiment established that the current grid did not clear the minimum trade boundary."
         ),
         "",

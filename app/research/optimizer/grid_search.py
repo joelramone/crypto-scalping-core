@@ -165,6 +165,12 @@ class GridSearchConfig(BaseModel):
     parameters: dict[str, list[Any]] = Field(min_length=1)
     period_start: str | None = None
     period_end: str | None = None
+    hypothesis_id: str | None = None
+    preregistered: bool = False
+    anti_tuning: bool = False
+    final_status: str | None = None
+    verdict: str | None = None
+    failure_classification: str | None = None
 
 
 class GridSearchResult(BaseModel):

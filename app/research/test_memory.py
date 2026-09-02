@@ -12,6 +12,7 @@ from app.research.memory.experiment_writer import (
 )
 from app.research.memory.import_leaderboard import import_historical_leaderboard
 from app.research.memory.knowledge_base import build_memory_summary
+from app.research.memory.journal import build_experiment_journal
 from app.research.memory.report_index import render_memory_summary
 from app.research.optimizer.grid_search import (
     GridSearchConfig,
@@ -191,6 +192,55 @@ def test_write_experiment_memory_creates_complete_row_and_artifacts(
     assert "Best Configuration:" in journal_text
     assert "Deterministic Interpretation" in journal_text
     assert "Deterministic Boundary Recommendations" in journal_text
+
+
+def test_exploratory_journal_retains_generic_follow_up_recommendations(tmp_path: Path):
+    journal_text = build_experiment_journal(
+        "EXP-EXPLORATORY",
+        "2026-09-02T00:00:00Z",
+        _sample_config(tmp_path),
+        _sample_summary(),
+    )
+
+    assert "Center the next grid around the current best parameters" in journal_text
+    assert "another timeframe" in journal_text
+
+
+def test_closed_preregistered_journal_emits_no_rescue_closure(tmp_path: Path):
+    config = _sample_config(tmp_path).model_copy(
+        update={
+            "hypothesis_id": "HYP-CLOSED-001",
+            "preregistered": True,
+            "anti_tuning": True,
+            "final_status": "CLOSED_REJECTED",
+            "verdict": "BASELINE_REJECT",
+            "failure_classification": "FEE_DOMINATED",
+        }
+    )
+
+    journal_text = build_experiment_journal(
+        "EXP-CLOSED",
+        "2026-09-02T00:00:00Z",
+        config,
+        _sample_summary(),
+    )
+
+    assert "one frozen baseline configuration" in journal_text
+    assert "Center the next grid" not in journal_text
+    assert "another timeframe" not in journal_text
+    assert "No rescue or parameter optimization is authorized" in journal_text
+    assert "Final Status: CLOSED_REJECTED" in journal_text
+    assert "Failure Classification: FEE_DOMINATED" in journal_text
+
+
+def test_legacy_grid_config_defaults_to_exploratory_governance(tmp_path: Path):
+    config = _sample_config(tmp_path)
+
+    assert config.hypothesis_id is None
+    assert config.preregistered is False
+    assert config.anti_tuning is False
+    assert config.final_status is None
+    assert config.verdict is None
 
 
 def test_report_index_aggregates_canonical_and_legacy_rows(tmp_path: Path):
