@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.research.governance.failures import classify_baseline_failure
+from app.research.governance.verdicts import determine_baseline_verdict
 from app.research.memory.experiment_id import generate_next_experiment_id
 from app.research.memory.experiment_store import (
     JOURNAL_DIR,
@@ -15,7 +17,6 @@ from app.research.memory.experiment_store import (
     upsert_memory_index_row,
 )
 from app.research.memory.journal import build_experiment_journal
-from app.research.governance.verdicts import determine_baseline_verdict
 
 if TYPE_CHECKING:
     from app.research.optimizer.grid_search import GridSearchConfig, GridSearchSummary
@@ -51,12 +52,7 @@ def _derive_completed_outcome(
         return verdict, "INSUFFICIENT_SAMPLE", None
     if verdict == "BASELINE_CANDIDATE":
         return verdict, "COMPLETED", None
-    fee_dominated = (
-        diagnostics.gross_expectancy > 0.0
-        and diagnostics.fee_expectancy >= diagnostics.gross_expectancy
-        and diagnostics.net_expectancy <= 0.0
-    )
-    return verdict, "CLOSED_REJECTED", "FEE_DOMINATED" if fee_dominated else None
+    return verdict, "CLOSED_REJECTED", classify_baseline_failure(diagnostics)
 
 
 def _best_result_fields(summary: GridSearchSummary) -> tuple[str, str, str, str, str, str]:
