@@ -15,6 +15,7 @@ from app.research.memory.experiment_store import (
     upsert_memory_index_row,
 )
 from app.research.memory.journal import build_experiment_journal
+from app.research.regime_transition_report import determine_verdict
 
 if TYPE_CHECKING:
     from app.research.optimizer.grid_search import GridSearchConfig, GridSearchSummary
@@ -27,6 +28,33 @@ class ExperimentMemoryArtifacts:
     experiment_id: str
     journal_path: Path
     index_path: Path
+
+
+def _derive_completed_outcome(
+    config: GridSearchConfig,
+    summary: GridSearchSummary,
+) -> tuple[str | None, str | None, str | None]:
+    """Derive governance metadata from completed metrics, never preregistration."""
+    if not (
+        config.preregistered
+        and config.anti_tuning
+        and config.strategy in {"regime_transition", "short_regime_transition"}
+        and summary.ranked_results
+    ):
+        return config.verdict, config.final_status, config.failure_classification
+    diagnostics = summary.ranked_results[0].diagnostics
+    if diagnostics is None:
+        return config.verdict, config.final_status, config.failure_classification
+
+    verdict = determine_verdict(diagnostics)
+    if verdict != "BASELINE_REJECT":
+        return verdict, "COMPLETED", None
+    fee_dominated = (
+        diagnostics.gross_expectancy > 0.0
+        and diagnostics.net_expectancy <= 0.0
+        and diagnostics.total_fees > 0.0
+    )
+    return verdict, "CLOSED_REJECTED", "FEE_DOMINATED" if fee_dominated else None
 
 
 def _best_result_fields(summary: GridSearchSummary) -> tuple[str, str, str, str, str, str]:
@@ -55,7 +83,16 @@ def write_experiment_memory(
     created_at_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
-    journal_markdown = build_experiment_journal(experiment_id, created_at_utc, config, summary)
+    verdict, final_status, failure_classification = _derive_completed_outcome(config, summary)
+    journal_markdown = build_experiment_journal(
+        experiment_id,
+        created_at_utc,
+        config,
+        summary,
+        verdict=verdict,
+        final_status=final_status,
+        failure_classification=failure_classification,
+    )
     journal_path = JOURNAL_DIR / f"{experiment_id}.md"
     journal_path.write_text(journal_markdown, encoding="utf-8")
 
@@ -67,6 +104,7 @@ def write_experiment_memory(
         best_configuration,
         status,
     ) = _best_result_fields(summary)
+    status = final_status or status
     index_path = upsert_memory_index_row(
         {
             "experiment_id": experiment_id,
