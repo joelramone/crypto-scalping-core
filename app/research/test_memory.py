@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from app.research.analysis.trade_diagnostics import TradeDiagnostics
 from app.research.memory.experiment_store import MEMORY_INDEX_COLUMNS, load_memory_index
 from app.research.memory.experiment_writer import (
+    _derive_completed_outcome,
     write_experiment_memory,
     write_imported_experiment_memory,
 )
@@ -206,6 +208,31 @@ def test_exploratory_journal_retains_generic_follow_up_recommendations(tmp_path:
     assert "another timeframe" in journal_text
 
 
+def test_preregistered_single_config_is_frozen_before_outcome(tmp_path: Path):
+    config = _sample_config(tmp_path).model_copy(
+        update={
+            "hypothesis_id": "HYP-FROZEN-001",
+            "preregistered": True,
+            "anti_tuning": True,
+            "parameters": {"take_profit_pct": [0.012], "stop_loss_pct": [0.008]},
+        }
+    )
+
+    journal_text = build_experiment_journal(
+        "EXP-FROZEN", "2026-09-02T00:00:00Z", config, _sample_summary()
+    )
+
+    assert "Evaluate the one frozen, preregistered baseline configuration" in journal_text
+    assert "one frozen baseline configuration rather than a parameter sweep" in journal_text
+    assert "preregistered baseline configuration produced the observed metrics" in journal_text
+    assert "identify stronger parameter combinations" not in journal_text
+    assert "structured sweep" not in journal_text
+    assert "strongest configuration" not in journal_text
+    assert "current boundary of known performance" not in journal_text
+    assert "Best Configuration" not in journal_text
+    assert "## Parameter Grid" not in journal_text
+
+
 def test_closed_preregistered_journal_emits_no_rescue_closure(tmp_path: Path):
     config = _sample_config(tmp_path).model_copy(
         update={
@@ -215,6 +242,7 @@ def test_closed_preregistered_journal_emits_no_rescue_closure(tmp_path: Path):
             "final_status": "CLOSED_REJECTED",
             "verdict": "BASELINE_REJECT",
             "failure_classification": "FEE_DOMINATED",
+            "parameters": {"take_profit_pct": [0.012], "stop_loss_pct": [0.008]},
         }
     )
 
@@ -231,6 +259,50 @@ def test_closed_preregistered_journal_emits_no_rescue_closure(tmp_path: Path):
     assert "No rescue or parameter optimization is authorized" in journal_text
     assert "Final Status: CLOSED_REJECTED" in journal_text
     assert "Failure Classification: FEE_DOMINATED" in journal_text
+
+
+def test_rejected_outcome_is_derived_after_metrics_not_predeclared(tmp_path: Path):
+    config = _sample_config(tmp_path).model_copy(
+        update={
+            "hypothesis_id": "HYP-BASELINE-001",
+            "strategy": "short_regime_transition",
+            "preregistered": True,
+            "anti_tuning": True,
+            "parameters": {"take_profit_pct": [0.012]},
+        }
+    )
+    diagnostics = TradeDiagnostics.model_construct(
+        completed_trades=331,
+        net_profit_factor=0.971714,
+        net_expectancy=-0.010627,
+        net_pnl=-3.517658,
+        gross_expectancy=0.069345,
+        positive_pnl_concentration_top_2_months=0.659866,
+        total_fees=26.470819,
+    )
+    summary = _sample_summary()
+    summary.ranked_results[0].diagnostics = diagnostics
+
+    assert config.verdict is None
+    assert config.final_status is None
+    assert _derive_completed_outcome(config, summary) == (
+        "BASELINE_REJECT",
+        "CLOSED_REJECTED",
+        "FEE_DOMINATED",
+    )
+
+    journal_text = build_experiment_journal(
+        "EXP-RESULT",
+        "2026-09-02T00:00:00Z",
+        config,
+        summary,
+        verdict="BASELINE_REJECT",
+        final_status="CLOSED_REJECTED",
+        failure_classification="FEE_DOMINATED",
+    )
+    assert "Center the next grid" not in journal_text
+    assert "another timeframe" not in journal_text
+    assert "No rescue or parameter optimization is authorized" in journal_text
 
 
 def test_legacy_grid_config_defaults_to_exploratory_governance(tmp_path: Path):

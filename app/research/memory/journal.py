@@ -62,9 +62,19 @@ def _best_metrics_lines(summary: GridSearchSummary) -> list[str]:
     ]
 
 
+def _baseline_metrics_lines(summary: GridSearchSummary) -> list[str]:
+    """Render neutral metric labels for a single frozen baseline."""
+    return [line.replace("Best ", "Observed ") for line in _best_metrics_lines(summary)]
+
+
+def _is_frozen_baseline(config: GridSearchConfig) -> bool:
+    """Return whether the preregistration contains exactly one combination."""
+    return config.preregistered and all(len(values) == 1 for values in config.parameters.values())
+
+
 def _build_objective(config: GridSearchConfig) -> str:
     """Create a simple experiment objective from config."""
-    if _is_no_rescue_closure(config):
+    if _is_frozen_baseline(config):
         return (
             f"Evaluate the one frozen, preregistered baseline configuration for "
             f"{config.hypothesis_id} on {config.timeframe} candles."
@@ -77,10 +87,10 @@ def _build_objective(config: GridSearchConfig) -> str:
 
 def _build_hypothesis(config: GridSearchConfig) -> str:
     """Create a simple experiment hypothesis from config."""
-    if _is_no_rescue_closure(config):
+    if _is_frozen_baseline(config):
         return (
-            f"{config.hypothesis_id} is one frozen baseline configuration, not a parameter "
-            "sweep or an attempt to identify stronger settings."
+            "This experiment evaluates one frozen baseline configuration rather than "
+            "a parameter sweep."
         )
     parameter_count = sum(len(values) for values in config.parameters.values())
     return (
@@ -110,9 +120,13 @@ def _build_results(summary: GridSearchSummary) -> str:
     return "\n".join(lines)
 
 
-def _is_no_rescue_closure(config: GridSearchConfig) -> bool:
-    """Return whether final preregistration metadata closes further tuning."""
-    rejected = config.final_status == "CLOSED_REJECTED" or config.verdict == "BASELINE_REJECT"
+def _is_no_rescue_closure(
+    config: GridSearchConfig,
+    verdict: str | None = None,
+    final_status: str | None = None,
+) -> bool:
+    """Return whether the observed outcome closes further tuning."""
+    rejected = final_status == "CLOSED_REJECTED" or verdict == "BASELINE_REJECT"
     return config.preregistered and config.anti_tuning and rejected
 
 
@@ -124,10 +138,17 @@ def _closure_recommendation() -> str:
     )
 
 
-def _build_lessons_learned(config: GridSearchConfig, summary: GridSearchSummary) -> str:
+def _build_lessons_learned(
+    config: GridSearchConfig,
+    summary: GridSearchSummary,
+    verdict: str | None,
+    final_status: str | None,
+) -> str:
     """Render a lightweight lessons-learned section."""
-    if _is_no_rescue_closure(config):
+    if _is_no_rescue_closure(config, verdict, final_status):
         return _closure_recommendation()
+    if _is_frozen_baseline(config):
+        return "- The preregistered baseline configuration produced the observed metrics above."
     if not summary.ranked_results:
         return (
             "- The current search space did not produce any configurations that met the "
@@ -145,10 +166,17 @@ def _build_lessons_learned(config: GridSearchConfig, summary: GridSearchSummary)
     )
 
 
-def _build_next_experiments(config: GridSearchConfig, summary: GridSearchSummary) -> str:
+def _build_next_experiments(
+    config: GridSearchConfig,
+    summary: GridSearchSummary,
+    verdict: str | None,
+    final_status: str | None,
+) -> str:
     """Suggest the next research steps in simple heuristic form."""
-    if _is_no_rescue_closure(config):
+    if _is_no_rescue_closure(config, verdict, final_status):
         return _closure_recommendation()
+    if _is_frozen_baseline(config):
+        return "- Follow-up is governed by the preregistered outcome rules, not by a parameter sweep."
     if not summary.ranked_results:
         return (
             f"- Re-run {config.strategy} on {config.timeframe} with a wider parameter grid.\n"
@@ -172,8 +200,21 @@ def build_experiment_journal(
     summary: GridSearchSummary,
     source: str = "optimizer run",
     optimizer_rerun: bool = True,
+    verdict: str | None = None,
+    final_status: str | None = None,
+    failure_classification: str | None = None,
 ) -> str:
     """Return the markdown journal for a completed optimizer experiment."""
+    # Explicit outcome values are produced after metrics evaluation. Config fallbacks
+    # retain compatibility with already-finalized historical records.
+    verdict = verdict if verdict is not None else config.verdict
+    final_status = final_status if final_status is not None else config.final_status
+    failure_classification = (
+        failure_classification
+        if failure_classification is not None
+        else config.failure_classification
+    )
+    closed = _is_no_rescue_closure(config, verdict, final_status)
     sections = [
         "# Experiment",
         "",
@@ -188,9 +229,9 @@ def build_experiment_journal(
         f"- Optimizer was not rerun: {'yes' if not optimizer_rerun else 'no'}",
         f"- Hypothesis ID: {config.hypothesis_id or ''}",
         f"- Preregistered: {'yes' if config.preregistered else 'no'}",
-        f"- Verdict: {config.verdict or ''}",
-        f"- Final Status: {config.final_status or ''}",
-        f"- Failure Classification: {config.failure_classification or ''}",
+        f"- Verdict: {verdict or ''}",
+        f"- Final Status: {final_status or ''}",
+        f"- Failure Classification: {failure_classification or ''}",
         "",
         "## Objective",
         _build_objective(config),
@@ -207,7 +248,7 @@ def build_experiment_journal(
         "## Timeframe",
         config.timeframe,
         "",
-        "## Parameter Grid",
+        "## Frozen Parameters" if _is_frozen_baseline(config) else "## Parameter Grid",
         _format_parameter_grid(config.parameters),
         "",
         "## Results",
@@ -217,27 +258,32 @@ def build_experiment_journal(
         f"- Total Configurations: {summary.evaluated_configurations}",
         f"- Eligible Configurations: {len(summary.ranked_results)}",
         "",
-        "## Best Configuration",
-        "\n".join(_best_metrics_lines(summary)),
+        "## Baseline Configuration" if _is_frozen_baseline(config) else "## Best Configuration",
+        "\n".join(
+            _baseline_metrics_lines(summary)
+            if _is_frozen_baseline(config)
+            else _best_metrics_lines(summary)
+        ),
         "",
         "## Lessons Learned",
-        _build_lessons_learned(config, summary),
+        _build_lessons_learned(config, summary, verdict, final_status),
         "",
         "## Deterministic Interpretation",
         (
-            "The strongest observed configuration is treated as the current boundary of "
-            "known performance within this exact experiment grid."
-            if summary.ranked_results and not _is_no_rescue_closure(config)
-            else "This rejected preregistered baseline is closed and cannot be tuned or rescued."
-            if _is_no_rescue_closure(config)
+            "This rejected preregistered baseline is closed and cannot be tuned or rescued."
+            if closed
+            else "The preregistered baseline configuration produced the observed metrics above."
+            if _is_frozen_baseline(config)
+            else "The strongest observed configuration is treated as the current boundary of known performance within this exact experiment grid."
+            if summary.ranked_results
             else "This experiment established that the current grid did not clear the minimum trade boundary."
         ),
         "",
         "## Deterministic Boundary Recommendations",
-        _build_next_experiments(config, summary),
+        _build_next_experiments(config, summary, verdict, final_status),
         "",
         "## Recommended Next Experiments",
-        _build_next_experiments(config, summary),
+        _build_next_experiments(config, summary, verdict, final_status),
         "",
     ]
     return "\n".join(sections)
