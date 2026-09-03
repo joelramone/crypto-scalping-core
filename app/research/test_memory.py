@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.research.analysis.trade_diagnostics import TradeDiagnostics
+from app.research.governance.verdicts import determine_baseline_verdict
 from app.research.memory.experiment_store import MEMORY_INDEX_COLUMNS, load_memory_index
 from app.research.memory.experiment_writer import (
     _derive_completed_outcome,
@@ -214,6 +215,7 @@ def test_preregistered_single_config_is_frozen_before_outcome(tmp_path: Path):
             "hypothesis_id": "HYP-FROZEN-001",
             "preregistered": True,
             "anti_tuning": True,
+            "verdict_policy": "authoritative_baseline_gates",
             "parameters": {"take_profit_pct": [0.012], "stop_loss_pct": [0.008]},
         }
     )
@@ -268,6 +270,7 @@ def test_rejected_outcome_is_derived_after_metrics_not_predeclared(tmp_path: Pat
             "strategy": "short_regime_transition",
             "preregistered": True,
             "anti_tuning": True,
+            "verdict_policy": "authoritative_baseline_gates",
             "parameters": {"take_profit_pct": [0.012]},
         }
     )
@@ -277,10 +280,12 @@ def test_rejected_outcome_is_derived_after_metrics_not_predeclared(tmp_path: Pat
         net_expectancy=-0.010627,
         net_pnl=-3.517658,
         gross_expectancy=0.069345,
+        fee_expectancy=0.079972,
         positive_pnl_concentration_top_2_months=0.659866,
         total_fees=26.470819,
     )
     summary = _sample_summary()
+    assert _derive_completed_outcome(config, summary) == (None, None, None)
     summary.ranked_results[0].diagnostics = diagnostics
 
     assert config.verdict is None
@@ -305,12 +310,96 @@ def test_rejected_outcome_is_derived_after_metrics_not_predeclared(tmp_path: Pat
     assert "No rescue or parameter optimization is authorized" in journal_text
 
 
+def _governed_outcome(
+    tmp_path: Path,
+    *,
+    strategy: str = "unrelated_strategy_name",
+    completed_trades: int = 100,
+    gross_expectancy: float = 0.2,
+    fee_expectancy: float = 0.05,
+    net_expectancy: float = 0.15,
+    net_profit_factor: float = 1.2,
+    net_pnl: float = 15.0,
+    concentration: float = 0.5,
+) -> tuple[str | None, str | None, str | None]:
+    config = _sample_config(tmp_path).model_copy(
+        update={
+            "strategy": strategy,
+            "preregistered": True,
+            "anti_tuning": True,
+            "verdict_policy": "authoritative_baseline_gates",
+        }
+    )
+    diagnostics = TradeDiagnostics.model_construct(
+        completed_trades=completed_trades,
+        gross_expectancy=gross_expectancy,
+        fee_expectancy=fee_expectancy,
+        net_expectancy=net_expectancy,
+        net_profit_factor=net_profit_factor,
+        net_pnl=net_pnl,
+        positive_pnl_concentration_top_2_months=concentration,
+    )
+    summary = _sample_summary()
+    summary.ranked_results[0].diagnostics = diagnostics
+    return _derive_completed_outcome(config, summary)
+
+
+def test_governance_uses_policy_metadata_not_strategy_name(tmp_path: Path):
+    assert _governed_outcome(tmp_path) == ("BASELINE_CANDIDATE", "COMPLETED", None)
+
+
+def test_fee_dominated_requires_per_trade_fee_expectancy(tmp_path: Path):
+    assert _governed_outcome(
+        tmp_path,
+        gross_expectancy=0.069345,
+        fee_expectancy=0.079972,
+        net_expectancy=-0.010627,
+        net_profit_factor=0.97,
+        net_pnl=-3.5,
+    ) == ("BASELINE_REJECT", "CLOSED_REJECTED", "FEE_DOMINATED")
+
+
+def test_positive_net_edge_is_not_fee_dominated(tmp_path: Path):
+    assert _governed_outcome(tmp_path) == ("BASELINE_CANDIDATE", "COMPLETED", None)
+
+
+def test_insufficient_sample_has_distinct_final_status(tmp_path: Path):
+    assert _governed_outcome(tmp_path, completed_trades=99) == (
+        "INSUFFICIENT_SAMPLE",
+        "INSUFFICIENT_SAMPLE",
+        None,
+    )
+
+
+def test_top_two_month_concentration_rejects_otherwise_profitable_baseline(
+    tmp_path: Path,
+):
+    assert _governed_outcome(tmp_path, concentration=0.800001) == (
+        "BASELINE_REJECT",
+        "CLOSED_REJECTED",
+        None,
+    )
+
+
+def test_authoritative_boundary_allows_concentration_of_exactly_point_eight():
+    diagnostics = TradeDiagnostics.model_construct(
+        completed_trades=100,
+        gross_expectancy=0.2,
+        net_profit_factor=1.2,
+        net_expectancy=0.15,
+        net_pnl=15.0,
+        positive_pnl_concentration_top_2_months=0.80,
+    )
+    assert determine_baseline_verdict(diagnostics) == "BASELINE_CANDIDATE"
+
+
 def test_legacy_grid_config_defaults_to_exploratory_governance(tmp_path: Path):
     config = _sample_config(tmp_path)
 
     assert config.hypothesis_id is None
     assert config.preregistered is False
     assert config.anti_tuning is False
+    assert config.verdict_policy is None
     assert config.final_status is None
     assert config.verdict is None
 

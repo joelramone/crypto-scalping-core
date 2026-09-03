@@ -4,22 +4,11 @@ from pathlib import Path
 from typing import Any
 
 from app.research.analysis.trade_diagnostics import TradeDiagnostics
+from app.research.governance.verdicts import determine_baseline_verdict
 from app.research.simulation import BacktestResult
 
 
-def determine_verdict(diagnostics: TradeDiagnostics) -> str:
-    """Apply the pre-registered verdict rules in their stated order."""
-    if diagnostics.completed_trades < 100:
-        return "INSUFFICIENT_SAMPLE"
-    if (
-        diagnostics.net_profit_factor <= 1.0
-        or diagnostics.net_expectancy <= 0.0
-        or diagnostics.net_pnl <= 0.0
-        or diagnostics.gross_expectancy <= 0.0
-        or diagnostics.positive_pnl_concentration_top_2_months > 0.80
-    ):
-        return "BASELINE_REJECT"
-    return "BASELINE_CANDIDATE"
+determine_verdict = determine_baseline_verdict
 
 
 def build_report(

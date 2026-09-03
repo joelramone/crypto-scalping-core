@@ -168,6 +168,7 @@ class GridSearchConfig(BaseModel):
     hypothesis_id: str | None = None
     preregistered: bool = False
     anti_tuning: bool = False
+    verdict_policy: Literal["authoritative_baseline_gates"] | None = None
     final_status: str | None = None
     verdict: str | None = None
     failure_classification: str | None = None
