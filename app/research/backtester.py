@@ -23,6 +23,7 @@ from app.research.strategies import (
     PullbackStrategy,
     RegimeTransitionStrategy,
     ShortRegimeTransitionStrategy,
+    ShortMomentumPullbackContinuationStrategy,
     VolatilityExhaustionStrategy,
 )
 
@@ -39,6 +40,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "volatility_exhaustion": VolatilityExhaustionStrategy,
     "regime_transition": RegimeTransitionStrategy,
     "short_regime_transition": ShortRegimeTransitionStrategy,
+    "short_momentum_pullback_continuation": ShortMomentumPullbackContinuationStrategy,
 }
 
 
