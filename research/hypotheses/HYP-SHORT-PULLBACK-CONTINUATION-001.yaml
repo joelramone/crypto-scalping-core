@@ -1,0 +1,188 @@
+hypothesis_id: HYP-SHORT-PULLBACK-CONTINUATION-001
+status: PRE_REGISTERED_NOT_TESTED
+purpose: short_pullback_continuation_discovery_baseline
+strategy_family: STRATEGY_FAMILY_6_SHORT_PULLBACK_CONTINUATION
+symbol: BTCUSDT
+timeframe: 15m
+direction: short_only
+
+entry_definition:
+  evaluation_candle: completed_candle_t
+  exact_expression: >-
+    ema20[t] < ema50[t] AND ema50[t] < ema200[t]
+    AND high[t-1] >= ema20[t-1] AND close[t-1] < ema50[t-1]
+    AND close[t-1] > open[t-1] AND close[t] < open[t]
+    AND close[t] < low[t-1]
+  conditions:
+    - ema20[t] < ema50[t]
+    - ema50[t] < ema200[t]
+    - high[t-1] >= ema20[t-1]
+    - close[t-1] < ema50[t-1]
+    - close[t-1] > open[t-1]
+    - close[t] < open[t]
+    - close[t] < low[t-1]
+  logical_operator: AND
+  ema_features: existing_causal_EMA20_EMA50_EMA200
+  pullback_candle: t-1
+  confirmation_candle: t
+  comparisons_are_exact: true
+  tolerance: null
+  future_information_allowed: false
+  additional_filters_allowed: false
+
+frozen_execution:
+  implementation: app/research/simulation.py
+  modification_allowed: false
+  entry_execution: close[t]
+  position_side: short
+  fixed_notional_usdt: 100.0
+  concurrent_positions: 1
+  signals_during_open_position: suppressed
+  first_exit_evaluation_candle: t+1
+  entry_candle_exit_allowed: false
+  take_profit_pct: 0.012
+  take_profit_price: entry_price * (1 - 0.012)
+  stop_loss_pct: 0.008
+  stop_loss_price: entry_price * (1 + 0.008)
+  same_candle_price_exit_priority: [stop_loss, take_profit]
+  max_holding_candles: 24
+  max_holding_exit_price: close
+  final_available_candle_may_close_trade: true
+  generate_exits: false
+  fee_rate: 0.0004
+  fees: entry_and_exit_notionals
+  slippage: none
+  spread: none
+  leverage: none
+  compounding: false
+  optimization_allowed: false
+
+dataset_boundaries:
+  discovery:
+    path: data/BTCUSDT_1m.csv
+    period_start: "2025-01-01"
+    period_end: "2025-12-31"
+    period_end_inclusive: true
+    classification: DISCOVERY_USED
+    permitted_baseline_runs: 1
+    resample_timeframe: 15m
+    resampling: causal
+    selection_before_feature_calculation: true
+  prohibited:
+    - period_start: "2026-01-01"
+      period_end: "2026-08-05"
+      period_end_inclusive: true
+      classification: PROHIBITED
+    - strictly_after: "2026-08-05"
+      classification: RESERVED_DO_NOT_ACCESS
+  separate_raw_2026_file_access_allowed: false
+
+diagnostic_requirements:
+  implementation: permanent_TradeDiagnostics
+  mandatory: true
+  fields:
+    - gross_pnl_before_fees
+    - total_fees
+    - net_pnl
+    - gross_expectancy
+    - fee_expectancy
+    - net_expectancy
+    - gross_profit_factor
+    - net_profit_factor
+    - wins
+    - losses
+    - flats
+    - win_rate
+    - average_winner
+    - median_winner
+    - average_loser
+    - median_loser
+    - payoff_ratio
+    - break_even_win_rate
+    - actual_minus_break_even_win_rate
+    - exit_counts_percentages_and_pnl
+    - holding_duration_statistics
+    - raw_entry_signals
+    - completed_trades
+    - suppressed_signals
+    - suppression_rate
+    - monthly_trade_and_pnl_diagnostics
+    - positive_pnl_concentration_top_2_months
+
+verdict_rules:
+  evaluation_order: [INSUFFICIENT_SAMPLE, BASELINE_REJECT, BASELINE_CANDIDATE]
+  insufficient_sample:
+    verdict: INSUFFICIENT_SAMPLE
+    condition: completed_trades < 100
+    terminal_for_hypothesis: true
+  baseline_reject:
+    verdict: BASELINE_REJECT
+    minimum_completed_trades: 100
+    any:
+      - gross_expectancy <= 0
+      - net_profit_factor <= 1
+      - net_expectancy <= 0
+      - net_pnl <= 0
+      - positive_pnl_concentration_top_2_months > 0.80
+    terminal_for_hypothesis: true
+  baseline_candidate:
+    verdict: BASELINE_CANDIDATE
+    all:
+      - completed_trades >= 100
+      - gross_expectancy > 0
+      - net_profit_factor > 1
+      - net_expectancy > 0
+      - net_pnl > 0
+      - positive_pnl_concentration_top_2_months <= 0.80
+  discretionary_override_allowed: false
+
+anti_tuning:
+  parameter_combinations: 1
+  permitted_2025_baseline_runs: 1
+  begins_after_observing_any_2025_result: true
+  prohibited_changes:
+    - entry_inequalities
+    - EMA_periods
+    - direction
+    - timeframe
+    - take_profit_pct
+    - stop_loss_pct
+    - max_holding_candles
+    - fee_assumptions
+    - sizing_assumptions
+    - data_boundary
+  prohibited_additions:
+    - trend_strength_filter
+    - volatility_filter
+    - volume_filter
+    - RSI
+    - ATR
+    - Donchian
+    - Bollinger
+    - return_filter
+    - candle_shape_filter
+    - close_location_filter
+    - quality_score
+    - cooldown
+    - regime_filter
+    - machine_learning
+  prohibited_followups:
+    - near_neighbor_values
+    - sensitivity_grids
+    - alternative_confirmations
+    - rescue_variants
+  termination_rule: >-
+    BASELINE_REJECT or INSUFFICIENT_SAMPLE ends this exact hypothesis;
+    a materially different idea requires a new hypothesis ID and human approval
+
+authorization:
+  documentation_only: true
+  implementation_authorized: false
+  configuration_authorized: false
+  tests_against_market_data_authorized: false
+  optimization_authorized: false
+  market_backtest_authorized: false
+  report_generation_authorized: false
+  experiment_id: EXP-000022
+  experiment_authorized: false
+  next_stage: IMPLEMENTATION_REQUIRES_HUMAN_AUTHORIZATION
