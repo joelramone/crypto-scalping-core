@@ -22,6 +22,7 @@ from app.research.strategies import (
     MomentumPullbackContinuationStrategy,
     PullbackStrategy,
     RegimeTransitionStrategy,
+    ShortCompressionBreakdownStrategy,
     ShortRegimeTransitionStrategy,
     ShortMomentumPullbackContinuationStrategy,
     VolatilityExhaustionStrategy,
@@ -39,6 +40,7 @@ STRATEGIES: dict[str, type[BaseStrategy]] = {
     "ema_pullback": EmaPullbackStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
     "regime_transition": RegimeTransitionStrategy,
+    "short_compression_breakdown": ShortCompressionBreakdownStrategy,
     "short_regime_transition": ShortRegimeTransitionStrategy,
     "short_momentum_pullback_continuation": ShortMomentumPullbackContinuationStrategy,
 }
@@ -112,7 +114,7 @@ def print_feature_summary(df: pd.DataFrame) -> None:
     print(f"Feature columns created: {', '.join(FEATURE_COLUMNS)}")
     print("Last row feature values:")
     for column in FEATURE_COLUMNS:
-        print(f"  {column}: {format_feature_value(last_row[column])}")
+        print(f"  {column}: {format_feature_value(last_row[column])")
 
 
 def load_strategy(strategy_key: str) -> BaseStrategy:
