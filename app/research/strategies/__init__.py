@@ -11,6 +11,9 @@ from app.research.strategies.momentum_pullback_continuation import (
 )
 from app.research.strategies.pullback import PullbackStrategy
 from app.research.strategies.regime_transition import RegimeTransitionStrategy
+from app.research.strategies.short_compression_breakdown import (
+    ShortCompressionBreakdownStrategy,
+)
 from app.research.strategies.short_regime_transition import ShortRegimeTransitionStrategy
 from app.research.strategies.short_momentum_pullback_continuation import (
     ShortMomentumPullbackContinuationStrategy,
@@ -27,6 +30,7 @@ __all__ = [
     "MomentumPullbackContinuationStrategy",
     "PullbackStrategy",
     "RegimeTransitionStrategy",
+    "ShortCompressionBreakdownStrategy",
     "ShortRegimeTransitionStrategy",
     "ShortMomentumPullbackContinuationStrategy",
     "VolatilityExhaustionStrategy",
