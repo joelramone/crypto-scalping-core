@@ -34,7 +34,9 @@ def test_exact_rule_generates_only_expected_entry() -> None:
     ("row", "column", "value"),
     [
         (20, "high", 110.0),
+        (20, "high", 111.0),
         (20, "low", 90.0),
+        (20, "low", 89.0),
         (30, "close", 92.0),
     ],
 )
