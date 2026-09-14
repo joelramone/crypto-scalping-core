@@ -114,7 +114,7 @@ def print_feature_summary(df: pd.DataFrame) -> None:
     print(f"Feature columns created: {', '.join(FEATURE_COLUMNS)}")
     print("Last row feature values:")
     for column in FEATURE_COLUMNS:
-        print(f"  {column}: {format_feature_value(last_row[column])")
+        print(f"  {column}: {format_feature_value(last_row[column])}")
 
 
 def load_strategy(strategy_key: str) -> BaseStrategy:
