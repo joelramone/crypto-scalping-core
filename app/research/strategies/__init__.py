@@ -14,6 +14,7 @@ from app.research.strategies.regime_transition import RegimeTransitionStrategy
 from app.research.strategies.short_compression_breakdown import (
     ShortCompressionBreakdownStrategy,
 )
+from app.research.strategies.short_failed_breakout import ShortFailedBreakoutStrategy
 from app.research.strategies.short_regime_transition import ShortRegimeTransitionStrategy
 from app.research.strategies.short_momentum_pullback_continuation import (
     ShortMomentumPullbackContinuationStrategy,
@@ -31,6 +32,7 @@ __all__ = [
     "PullbackStrategy",
     "RegimeTransitionStrategy",
     "ShortCompressionBreakdownStrategy",
+    "ShortFailedBreakoutStrategy",
     "ShortRegimeTransitionStrategy",
     "ShortMomentumPullbackContinuationStrategy",
     "VolatilityExhaustionStrategy",
