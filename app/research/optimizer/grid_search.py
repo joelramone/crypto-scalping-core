@@ -30,6 +30,7 @@ from app.research.strategies import (
     MeanReversionStrategy,
     MomentumPullbackContinuationStrategy,
     RegimeTransitionStrategy,
+    ShortCompressionBreakdownStrategy,
     ShortRegimeTransitionStrategy,
     ShortMomentumPullbackContinuationStrategy,
     VolatilityExhaustionStrategy,
@@ -127,6 +128,7 @@ OPTIMIZER_STRATEGIES: dict[str, type[BaseStrategy]] = {
     "momentum_pullback_continuation": MomentumPullbackContinuationStrategy,
     "volatility_exhaustion": VolatilityExhaustionStrategy,
     "regime_transition": RegimeTransitionStrategy,
+    "short_compression_breakdown": ShortCompressionBreakdownStrategy,
     "short_regime_transition": ShortRegimeTransitionStrategy,
     "short_momentum_pullback_continuation": ShortMomentumPullbackContinuationStrategy,
 }
@@ -142,6 +144,11 @@ PARAMETER_GRIDS: dict[str, dict[str, list[Any]]] = {
     },
     "volatility_exhaustion": VOLATILITY_EXHAUSTION_BASELINE,
     "regime_transition": {
+        "take_profit_pct": [0.012],
+        "stop_loss_pct": [0.008],
+        "max_holding_candles": [24],
+    },
+    "short_compression_breakdown": {
         "take_profit_pct": [0.012],
         "stop_loss_pct": [0.008],
         "max_holding_candles": [24],
