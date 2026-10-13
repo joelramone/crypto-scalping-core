@@ -35,16 +35,18 @@ def render_failure_pattern_report(diagnostics: list[dict[str, Any]]) -> str:
         "",
         "## Cross-Family Comparison",
         "",
-        "| Strategy | TF | Trades | Gross PnL | Fees | Net PnL | Gross PF | Net PF | Gross Exp. | Net Exp. | Profitable Months | Failure Mode |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Strategy | TF | Trades | Gross PnL | Fees | Net PnL | Gross PF | Net PF | Gross Exp. | Net Exp. | Profitable Months | Suppression | Triage Class |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for item in diagnostics:
         lines.append(
-            "| {strategy} | {timeframe} | {trades} | {gross_pnl_before_fees:.4f} | "
-            "{total_fees:.4f} | {net_pnl:.4f} | {gross_profit_factor:.4f} | "
-            "{net_profit_factor:.4f} | {gross_expectancy:.4f} | {net_expectancy:.4f} | "
-            "{profitable_month_percentage:.1%} | {failure_mode} |".format(**item)
+            "| {strategy} | {timeframe} | {trades} | {gross_pnl_before_fees:.6f} | "
+            "{total_fees:.6f} | {net_pnl:.6f} | {gross_profit_factor:.6f} | "
+            "{net_profit_factor:.6f} | {gross_expectancy:.6f} | {net_expectancy:.6f} | "
+            "{profitable_month_percentage:.1%} | {suppression_rate:.1%} | {failure_mode} |".format(**item)
         )
+
+    lines.extend(["", "## Sources", ""] + [f"- `{item['source']}` (first stored row; no reranking)" for item in diagnostics])
 
     lines.extend([
         "",
@@ -56,7 +58,7 @@ def render_failure_pattern_report(diagnostics: list[dict[str, Any]]) -> str:
         "",
         "## Governance Boundary",
         "",
-        "This report is descriptive research triage only. It does not rerun experiments, allocate EXP IDs, modify Research Memory, tune parameters, rescue rejected hypotheses, or authorize production trading.",
+        "These triage classes are not authoritative governance verdicts. Existing journal verdicts remain unchanged. This report is descriptive research triage only. It does not rerun experiments, allocate EXP IDs, modify Research Memory, tune parameters, rescue rejected hypotheses, or authorize production trading.",
         "",
     ])
     return "\n".join(lines)
@@ -64,9 +66,15 @@ def render_failure_pattern_report(diagnostics: list[dict[str, Any]]) -> str:
 
 def write_failure_pattern_report(paths: Iterable[str | Path], output: str | Path) -> Path:
     """Analyze existing leaderboards and persist the report."""
+    paths = list(paths)
     destination = Path(output)
+    resolved = destination.resolve()
+    research = Path(__file__).resolve().parents[3] / "research"
+    if (resolved.is_relative_to(research) and not resolved.is_relative_to(research / "reports")) or resolved in {Path(path).resolve() for path in paths}:
+        raise ValueError("Report output cannot overwrite source artifacts or Research Memory.")
+    report = render_failure_pattern_report(analyze_existing(paths))
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(render_failure_pattern_report(analyze_existing(paths)), encoding="utf-8")
+    destination.write_text(report, encoding="utf-8")
     return destination
 
 
