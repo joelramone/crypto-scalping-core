@@ -51,6 +51,6 @@ venv/bin/python -m app.research.query_report --query FEE_DOMINATED
 
 Los filtros se combinan con AND. `--query` busca una subcadena literal sin distinguir mayúsculas; no interpreta preguntas en lenguaje natural. `--section` selecciona un título exacto, también sin distinguir mayúsculas, hasta el siguiente título. Las filas de tablas incluyen su encabezado como contexto. Sin filtros devuelve todas las líneas no vacías. Sin coincidencias devuelve una lista vacía; un experimento o sección inexistente, o un informe ausente o vacío, produce un error con código de salida 2.
 
-El modo local es el único conectado: no necesita credenciales ni acceso de red. La integración real de GPT-6 permanece sin conectar y deshabilitada por defecto; disponer de una API key no activa llamadas. Cualquier incorporación futura debe ser opcional y explícita, y conservar las citas y los límites de gobernanza.
+La consulta local no necesita credenciales ni acceso de red. El [copiloto opcional de investigación](copilot.md) permite selección de evidencia con la API de OpenAI y permanece deshabilitado por defecto; disponer de una API key no activa llamadas. Requiere activación explícita y un identificador de modelo disponible, verificado por la API antes de generar una selección.
 
 Pruebas enfocadas: `venv/bin/python -m pytest -q -p no:cacheprovider app/research/test_query_report.py`.
