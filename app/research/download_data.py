@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -88,6 +89,8 @@ def parse_datetime_to_utc_ms(value: str) -> int:
         ) from exc
 
     if parsed.tzinfo is None:
+        if len(value) != 10:
+            raise ValueError("Datetime must include an explicit UTC offset")
         parsed = parsed.replace(tzinfo=timezone.utc)
     else:
         parsed = parsed.astimezone(timezone.utc)
@@ -157,9 +160,59 @@ def rows_to_dataframe(rows: list[list[Any]]) -> pd.DataFrame:
     return dataframe
 
 
+def validate_preparation(config: DownloadConfig) -> tuple[int, int]:
+    """Fail closed on known research restrictions; not a research authorization."""
+    start = parse_datetime_to_utc_ms(config.start)
+    end = parse_datetime_to_utc_ms(config.end)
+    if config.symbol != "BTCUSDT" or config.interval != "1m":
+        raise ValueError("Preparation supports BTCUSDT 1m only")
+    # Existing protocols: 2025 discovery-used, partial 2026 consumed,
+    # and all dates after 2026-08-05 reserved. No release is inferred.
+    if end > parse_datetime_to_utc_ms("2025-01-01"):
+        raise ValueError("Interval overlaps consumed/reserved research dates (2025 onward)")
+    if start % 60_000 or end % 60_000:
+        raise ValueError("Start and exclusive end must align to whole UTC minutes")
+    if config.output.exists() or config.output.is_symlink():
+        raise FileExistsError(f"Refusing overwrite: {config.output}")
+    return start, end
+
+
+def preparation_plan(config: DownloadConfig) -> dict[str, Any]:
+    start, end = validate_preparation(config)
+    stamp = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return {
+        "mode": "dry_run", "download_authorized": False,
+        "source": "binance", "product": "usdm-futures",
+        "method": "GET", "url": BINANCE_FUTURES_KLINES_URL,
+        "params": {"symbol": config.symbol, "interval": config.interval,
+                   "startTime": start, "endTime": end - 1, "limit": MAX_LIMIT},
+        "destination": str(config.output),
+        "suggested_filename": f"binance_usdm_{config.symbol}_{config.interval}_{stamp(start)}_{stamp(end)}_exclusive.csv",
+        "expected_candles": (end - start) // 60_000,
+        "notice": "Technical preparation only; pre-2025 dates are not automatically authorized for research. Separate human download authorization required.",
+    }
+
+
+def validate_download_frame(dataframe: pd.DataFrame, start: int, end: int) -> None:
+    from app.research.data_validation.validate_ohlcv import validate_ohlcv
+
+    # Validator accepts serialized ISO timestamps, as in its CSV interface.
+    validation = validate_ohlcv(dataframe.assign(timestamp=dataframe["timestamp"].astype(str)))
+    if not validation.structurally_valid or dataframe.empty:
+        raise ValueError(f"Invalid OHLCV: {validation.errors}")
+    expected_count = (end - start) // 60_000
+    expected_start = pd.to_datetime(start, unit="ms", utc=True)
+    expected_end = pd.to_datetime(end - 60_000, unit="ms", utc=True)
+    if (len(dataframe) != expected_count or
+            dataframe.iloc[0]["timestamp"] != expected_start or
+            dataframe.iloc[-1]["timestamp"] != expected_end):
+        raise ValueError("Missing candles or timestamps outside the requested interval")
+
+
 def download_binance_futures_klines(config: DownloadConfig) -> pd.DataFrame:
-    start_time_ms = parse_datetime_to_utc_ms(config.start)
-    end_time_ms = parse_datetime_to_utc_ms(config.end) - 1
+    # Kept for future separately authorized callers; the CLI below never calls it.
+    start_time_ms, exclusive_end_ms = validate_preparation(config)
+    end_time_ms = exclusive_end_ms - 1
     interval_ms = INTERVAL_TO_MS[config.interval]
     current_start_ms = start_time_ms
     rows: list[list[Any]] = []
@@ -169,55 +222,46 @@ def download_binance_futures_klines(config: DownloadConfig) -> pd.DataFrame:
             page = fetch_klines_page(session, config, current_start_ms, end_time_ms)
             if not page:
                 break
-
             rows.extend(page)
             last_open_time_ms = int(page[-1][0])
             next_start_ms = last_open_time_ms + interval_ms
             if next_start_ms <= current_start_ms:
                 raise RuntimeError("Binance pagination did not advance")
-
             current_start_ms = next_start_ms
-            if len(page) < MAX_LIMIT:
-                break
-
-            time.sleep(REQUEST_SLEEP_SECONDS)
+            # A short page is not proof that the bounded interval is complete.
+            if current_start_ms <= end_time_ms:
+                time.sleep(REQUEST_SLEEP_SECONDS)
 
     dataframe = rows_to_dataframe(rows)
+    validate_download_frame(dataframe, start_time_ms, exclusive_end_ms)
     config.output.parent.mkdir(parents=True, exist_ok=True)
-    dataframe.to_csv(config.output, index=False)
+    with config.output.open("x", encoding="utf-8", newline="") as handle:
+        dataframe.to_csv(handle, index=False)
     return dataframe
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Download Binance USD-M Futures klines into CSV.")
-    parser.add_argument("--symbol", required=True, help="Binance Futures symbol, for example BTCUSDT.")
-    parser.add_argument("--interval", required=True, help="Kline interval, for example 1m, 5m, 1h, or 1d.")
-    parser.add_argument("--start", required=True, help="Inclusive UTC start date or datetime, for example 2025-01-01.")
-    parser.add_argument("--end", required=True, help="Exclusive UTC end date or datetime, for example 2026-01-01.")
-    parser.add_argument("--output", required=True, type=Path, help="Output CSV path, for example data/BTCUSDT_1m.csv.")
-    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retry attempts per Binance request.")
+    parser = argparse.ArgumentParser(description="Prepare a bounded Binance USD-M request; no download is performed.")
+    parser.add_argument("--exchange", required=True, choices=["binance"])
+    parser.add_argument("--product", required=True, choices=["usdm-futures"])
+    parser.add_argument("--symbol", required=True)
+    parser.add_argument("--interval", required=True, choices=["1m"])
+    parser.add_argument("--start", required=True, help="Inclusive UTC ISO date or offset-aware datetime")
+    parser.add_argument("--end", required=True, help="Exclusive UTC ISO date or offset-aware datetime")
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--dry-run", required=True, action="store_true", help="Mandatory; show plan only, without network or writes")
     return parser
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     args = build_arg_parser().parse_args()
-    config = DownloadConfig(
-        symbol=args.symbol,
-        interval=args.interval,
-        start=args.start,
-        end=args.end,
-        output=args.output,
-        retries=args.retries,
-    )
-
     try:
-        dataframe = download_binance_futures_klines(config)
-    except (RuntimeError, ValueError, requests.RequestException) as exc:
-        logging.error("Failed to download Binance Futures klines: %s", exc)
-        raise SystemExit(1) from exc
-
-    logging.info("Downloaded %s candles to %s", len(dataframe), config.output)
+        config = DownloadConfig(symbol=args.symbol, interval=args.interval,
+                                start=args.start, end=args.end, output=args.output)
+        print(json.dumps(preparation_plan(config), sort_keys=True, indent=2))
+    except (ValueError, OSError) as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}, sort_keys=True))
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
