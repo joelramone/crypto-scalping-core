@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import math
+import os
+import tempfile
 import json
 import logging
 import time
@@ -17,6 +21,9 @@ MAX_LIMIT = 1500
 DEFAULT_RETRIES = 3
 DEFAULT_TIMEOUT_SECONDS = 30
 REQUEST_SLEEP_SECONDS = 0.2
+AUTHORIZED_START = "2024-10-01T00:00:00Z"
+AUTHORIZED_END = "2024-10-08T00:00:00Z"
+AUTHORIZED_OUTPUT = Path("data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv")
 
 INTERVAL_TO_MS: dict[str, int] = {
     "1m": 60_000,
@@ -95,6 +102,8 @@ def parse_datetime_to_utc_ms(value: str) -> int:
     else:
         parsed = parsed.astimezone(timezone.utc)
 
+    if parsed.microsecond % 1000:
+        raise ValueError("Sub-millisecond date precision is unsupported")
     return int(parsed.timestamp() * 1000)
 
 
@@ -172,9 +181,24 @@ def validate_preparation(config: DownloadConfig) -> tuple[int, int]:
         raise ValueError("Interval overlaps consumed/reserved research dates (2025 onward)")
     if start % 60_000 or end % 60_000:
         raise ValueError("Start and exclusive end must align to whole UTC minutes")
-    if config.output.exists() or config.output.is_symlink():
-        raise FileExistsError(f"Refusing overwrite: {config.output}")
+    for destination in (config.output, manifest_path(config.output)):
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(f"Refusing overwrite: {destination}")
     return start, end
+
+
+def manifest_path(output: Path) -> Path:
+    return output.with_suffix(output.suffix + ".manifest.json")
+
+
+def validate_execution(config: DownloadConfig, exchange: str, product: str) -> None:
+    start, end = validate_preparation(config)
+    if (exchange != "binance" or product != "usdm-futures" or
+            start != parse_datetime_to_utc_ms(AUTHORIZED_START) or
+            end != parse_datetime_to_utc_ms(AUTHORIZED_END) or
+            config.output.resolve() != (Path.cwd() / AUTHORIZED_OUTPUT).resolve() or
+            (Path.cwd() / "data").is_symlink()):
+        raise ValueError("Execution scope does not match the exact TASK-019B authorization")
 
 
 def preparation_plan(config: DownloadConfig) -> dict[str, Any]:
@@ -200,6 +224,9 @@ def validate_download_frame(dataframe: pd.DataFrame, start: int, end: int) -> No
     validation = validate_ohlcv(dataframe.assign(timestamp=dataframe["timestamp"].astype(str)))
     if not validation.structurally_valid or dataframe.empty:
         raise ValueError(f"Invalid OHLCV: {validation.errors}")
+    numeric = dataframe[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+    if not numeric.map(math.isfinite).all().all():
+        raise ValueError("OHLCV must contain finite numeric values")
     expected_count = (end - start) // 60_000
     expected_start = pd.to_datetime(start, unit="ms", utc=True)
     expected_end = pd.to_datetime(end - 60_000, unit="ms", utc=True)
@@ -210,7 +237,8 @@ def validate_download_frame(dataframe: pd.DataFrame, start: int, end: int) -> No
 
 
 def download_binance_futures_klines(config: DownloadConfig) -> pd.DataFrame:
-    # Kept for future separately authorized callers; the CLI below never calls it.
+    """Existing acquisition engine; CLI authorization is checked before entry."""
+    acquisition_started = time.perf_counter()
     start_time_ms, exclusive_end_ms = validate_preparation(config)
     end_time_ms = exclusive_end_ms - 1
     interval_ms = INTERVAL_TO_MS[config.interval]
@@ -234,14 +262,73 @@ def download_binance_futures_klines(config: DownloadConfig) -> pd.DataFrame:
 
     dataframe = rows_to_dataframe(rows)
     validate_download_frame(dataframe, start_time_ms, exclusive_end_ms)
-    config.output.parent.mkdir(parents=True, exist_ok=True)
-    with config.output.open("x", encoding="utf-8", newline="") as handle:
-        dataframe.to_csv(handle, index=False)
+    publish_validated_dataset(config, dataframe, acquisition_started)
     return dataframe
 
 
+def publish_validated_dataset(config: DownloadConfig, dataframe: pd.DataFrame, started: float) -> None:
+    """Stage both files, publish without replacement; manifest is the completion marker.
+
+    Same-directory hard links provide atomic, no-overwrite publication on NTFS
+    and POSIX filesystems. Unsupported filesystems fail closed. Two files cannot
+    be committed atomically together: handled failures roll back our publications;
+    after a process/power interruption, a CSV without a manifest is not success.
+    """
+    start, end = validate_preparation(config)
+    validate_download_frame(dataframe, start, end)
+    output, manifest = config.output, manifest_path(config.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: list[Path] = []
+    published: list[Path] = []
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
+                                         dir=output.parent, prefix=".ohlcv-", suffix=".tmp", delete=False) as handle:
+            csv_temp = Path(handle.name)
+            temporary.append(csv_temp)
+            dataframe.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Validate the actual serialized bytes before any final name is visible.
+        serialized = pd.read_csv(csv_temp)
+        serialized["timestamp"] = pd.to_datetime(serialized["timestamp"], utc=True, errors="raise")
+        validate_download_frame(serialized, start, end)
+        metadata = {
+            "status": "DATASET_VALIDATED", "purpose": "technical ingestion and validation only",
+            "source": "binance", "product": "usdm-futures", "source_url": BINANCE_FUTURES_KLINES_URL,
+            "symbol": config.symbol, "timeframe": config.interval,
+            "start_inclusive_utc": datetime.fromtimestamp(start / 1000, timezone.utc).isoformat(),
+            "end_exclusive_utc": datetime.fromtimestamp(end / 1000, timezone.utc).isoformat(),
+            "first_timestamp_utc": serialized.iloc[0]["timestamp"].isoformat(),
+            "last_timestamp_utc": serialized.iloc[-1]["timestamp"].isoformat(),
+            "row_count": len(serialized), "file_size_bytes": csv_temp.stat().st_size,
+            "sha256": hashlib.sha256(csv_temp.read_bytes()).hexdigest(),
+            "acquisition_duration_seconds": time.perf_counter() - started,
+            "acquired_at_utc": datetime.now(timezone.utc).isoformat(),
+            "csv_path": str(output),
+        }
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
+                                         dir=output.parent, prefix=".ohlcv-", suffix=".tmp", delete=False) as handle:
+            json_temp = Path(handle.name)
+            temporary.append(json_temp)
+            json.dump(metadata, handle, sort_keys=True, indent=2, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(csv_temp, output)
+        published.append(output)
+        os.link(json_temp, manifest)
+        published.append(manifest)
+    except BaseException:
+        for path in reversed(published):
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare a bounded Binance USD-M request; no download is performed.")
+    parser = argparse.ArgumentParser(description="Dry-run or execute the exact locally authorized BTCUSDT acquisition.")
     parser.add_argument("--exchange", required=True, choices=["binance"])
     parser.add_argument("--product", required=True, choices=["usdm-futures"])
     parser.add_argument("--symbol", required=True)
@@ -249,7 +336,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", required=True, help="Inclusive UTC ISO date or offset-aware datetime")
     parser.add_argument("--end", required=True, help="Exclusive UTC ISO date or offset-aware datetime")
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--dry-run", required=True, action="store_true", help="Mandatory; show plan only, without network or writes")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="Show plan only, without network or writes")
+    mode.add_argument("--execute-authorized-download", action="store_true", help="Execute only the exact TASK-019B scope on the operator computer")
     return parser
 
 
@@ -258,8 +347,13 @@ def main() -> None:
     try:
         config = DownloadConfig(symbol=args.symbol, interval=args.interval,
                                 start=args.start, end=args.end, output=args.output)
-        print(json.dumps(preparation_plan(config), sort_keys=True, indent=2))
-    except (ValueError, OSError) as exc:
+        if args.dry_run:
+            print(json.dumps(preparation_plan(config), sort_keys=True, indent=2))
+        else:
+            validate_execution(config, args.exchange, args.product)
+            download_binance_futures_klines(config)
+            print(manifest_path(config.output).read_text(encoding="utf-8"))
+    except (ValueError, OSError, RuntimeError, requests.RequestException, IndexError, TypeError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, sort_keys=True))
         raise SystemExit(2) from exc
 

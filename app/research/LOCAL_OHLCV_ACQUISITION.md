@@ -1,0 +1,49 @@
+# Authorized local acquisition (Windows CMD)
+
+Purpose: technical ingestion/integrity only, not strategy evaluation. Run from
+repository root on persistent local storage. No download was run in Codex Cloud.
+Python 3.12 is recommended; offline tests ran on Python 3.12.14/Linux with the
+versions below. Windows itself was not available for testing.
+
+After human review and checkout of `feat/local-authorized-ohlcv-acquisition-v1`
+(or the merged main containing it), use Windows CMD; no PowerShell required:
+
+```bat
+py -3.12 -m venv .venv-local
+.venv-local\Scripts\python.exe -m pip install pandas==2.2.3 requests==2.34.2 "pydantic==2.13.4"
+.venv-local\Scripts\python.exe -m app.research.download_data --exchange binance --product usdm-futures --symbol BTCUSDT --interval 1m --start 2024-10-01T00:00:00Z --end 2024-10-08T00:00:00Z --output data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv --dry-run
+.venv-local\Scripts\python.exe -m app.research.download_data --exchange binance --product usdm-futures --symbol BTCUSDT --interval 1m --start 2024-10-01T00:00:00Z --end 2024-10-08T00:00:00Z --output data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv --execute-authorized-download
+```
+
+Only the final command contacts Binance's public USD-M klines endpoint. No keys,
+paid services, backtest, optimizer or Research Memory writer are involved. No
+source fallback is performed. End is exclusive. Dates from 2025 onward remain
+rejected; dry-run of other technically allowed dates does not authorize use.
+
+Expected persistent outputs (both gitignored):
+
+- `data\binance_usdm_BTCUSDT_1m_20241001_20241008.csv`
+- `data\binance_usdm_BTCUSDT_1m_20241001_20241008.csv.manifest.json`
+
+Verify the local bytes, schema, interval, count and manifest using CMD:
+
+```bat
+type data\binance_usdm_BTCUSDT_1m_20241001_20241008.csv.manifest.json
+certutil -hashfile data\binance_usdm_BTCUSDT_1m_20241001_20241008.csv SHA256
+.venv-local\Scripts\python.exe -c "import hashlib,json,pathlib,pandas as pd; from app.research.download_data import validate_download_frame,parse_datetime_to_utc_ms,CSV_COLUMNS; p=pathlib.Path('data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv'); m=json.loads(p.with_suffix('.csv.manifest.json').read_text()); d=pd.read_csv(p); assert list(d.columns)==CSV_COLUMNS; d['timestamp']=pd.to_datetime(d['timestamp'],utc=True); validate_download_frame(d,parse_datetime_to_utc_ms('2024-10-01T00:00:00Z'),parse_datetime_to_utc_ms('2024-10-08T00:00:00Z')); assert len(d)==m['row_count']==10080; assert p.stat().st_size==m['file_size_bytes']; assert hashlib.sha256(p.read_bytes()).hexdigest()==m['sha256']; print('LOCAL_DATASET_VALIDATED')"
+```
+
+The manifest records source/product, UTC bounds, first/last timestamps, row count,
+SHA-256 of CSV bytes, byte size, acquisition time and duration. Save both files
+in your normal local backup. Do not commit them or assume a Git checkout backs
+them up. No external upload is performed.
+
+Publication uses same-directory temporary files and atomic, no-replacement hard
+links supported by NTFS. Other filesystems may not support this: failure is
+explicit, with no unsafe overwrite fallback. Handled errors remove temporary
+files and this run's published files. Two files are not one atomic transaction:
+a process kill/power loss can leave temporary files or a CSV without a manifest.
+Such an interrupted pair is not success; inspect it manually before recovery.
+Never delete or overwrite an existing valid dataset to rerun. Either existing
+CSV or manifest blocks acquisition before any request. Binance availability,
+regional access and actual historical completeness remain untested in Cloud.
