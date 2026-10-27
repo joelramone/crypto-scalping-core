@@ -13,3 +13,7 @@ venv/
 .DS_Store
 Thumbs.db
 data/*.csv
+
+# Local acquisition metadata accompanies gitignored market data.
+data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv.manifest.json
+.venv-local/
