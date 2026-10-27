@@ -69,3 +69,46 @@ aggregate is available only at its bucket end, not at its label. The check
 requires all constituent minutes in every bucket; it does not fill gaps,
 interpolate, calculate indicators or change simulator semantics. Passing is
 technical compatibility only, not authorization for a trading experiment.
+
+## TASK-021B: future fixed technical diagnostic (not authorized to run yet)
+
+After separate human authorization for this exact configuration and dataset use,
+run from repository root in Windows CMD with the same Python 3.12 environment:
+
+```bat
+.venv-local\Scripts\python.exe -m app.research.backtester --data data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv --strategy baseline_trend --timeframe 1m --execution-mode next_bar_open --expected-sha256 f04bbaf8b8fe5a333bd5e67891cec081fea4b9dba8850a3166bbbfb9e3893c5f --json
+```
+
+Do not execute this during preparation. Cloud tests use synthetic fixtures only.
+The JSON diagnostic is restricted to baseline_trend/1m with a mandatory expected
+SHA-256; the hashed bytes are exactly those passed to the existing loader. Hash
+mismatch, invalid/nonfinite OHLCV or discontinuous timestamps abort before strategy
+execution. The command writes nothing and invokes neither optimizer nor Research
+Memory writers. It reports actual fixed defaults (long, TP 0.004, SL 0.0025,
+holding 30, notional 100 USDT, fee 0.0004 per side), source hash/coverage, Git
+revision and dirty-tree flag, duration, gross/net PnL, fees, trades, net PF and
+closed-trade drawdown. Infinite PF is JSON null with an explicit status; a
+zero-trade run reports zero metrics. This is not a performance acceptance gate.
+
+`next_bar_open` observes the signal at completed candle t's close and enters at
+open[t+1], unconditionally with respect to that next candle's high/low/close.
+Without the next candle no trade opens. SL/TP may trigger during the entry candle;
+SL precedes TP, then indicator exit, then max-holding close. The holding ceiling
+counts the entry candle: 30 bars allow exits through entry index + 29. Existing
+trade `holding_candles` remains the index difference for compatibility (29 at
+that ceiling), not a new inclusive-bar count. Near dataset end the holding period
+is truncated. One position is allowed; scanning resumes at exit index + 1, so
+signals on the exit candle remain suppressed. Features are computed causally
+then warm-up rows dropped, as in the existing pipeline.
+
+The default remains `signal_close` for all legacy callers: same-candle close
+entry, exits starting on the next candle, and unchanged historical holding/index
+semantics. New mode is opt-in; no old results/configurations are rewritten.
+This changes entry/holding semantics only for callers explicitly selecting it.
+
+Neither convention models spread, slippage, transport latency, partial fills,
+market impact, funding or opening-gap barrier fills. Candle opens are assumed
+fully executable, not verified bid/ask fills. Drawdown uses closed trades, not
+intratrade equity; seven days, possible zero trades and indicator warm-up cannot
+establish profitability. No historical diagnostic has been run or authorized by
+this code delivery. Windows execution itself remains untested in Cloud.

@@ -76,8 +76,12 @@ def simulate_strategy(
     strategy: BaseStrategy,
     fee_rate: float = DEFAULT_FEE_RATE,
     fixed_notional: float = FIXED_NOTIONAL_USDT,
+    execution_mode: Literal["signal_close", "next_bar_open"] = "signal_close",
 ) -> BacktestResult:
     """Run a single-direction research strategy on featured candles."""
+    if execution_mode not in {"signal_close", "next_bar_open"}:
+        raise ValueError(f"Unsupported execution mode: {execution_mode}")
+    next_open = execution_mode == "next_bar_open"
     simulation_df = df.copy()
     entry_signals = strategy.generate_entries(simulation_df).reindex(
         simulation_df.index,
@@ -106,16 +110,17 @@ def simulate_strategy(
             index += 1
             continue
 
-        entry_index = index
-        entry_row = row
-        entry_price = float(entry_row["close"])
+        entry_index = index + 1 if next_open else index
+        entry_row = simulation_df.iloc[entry_index] if next_open else row
+        entry_price = float(entry_row["open"] if next_open else entry_row["close"])
         multiplier = 1.0 if side == "long" else -1.0
         take_profit_price = entry_price * (
             1.0 + multiplier * strategy.take_profit_pct()
         )
         stop_loss_price = entry_price * (1.0 - multiplier * strategy.stop_loss_pct())
         max_exit_index = min(
-            entry_index + strategy.max_holding_candles(),
+            # Next-open mode counts the entry candle among the holding bars.
+            entry_index + strategy.max_holding_candles() - (1 if next_open else 0),
             len(simulation_df) - 1,
         )
 
@@ -123,7 +128,8 @@ def simulate_strategy(
         exit_price = float(simulation_df.iloc[exit_index]["close"])
         exit_reason: ExitReason = "max_holding"
 
-        for candidate_index in range(entry_index + 1, max_exit_index + 1):
+        first_exit_index = entry_index if next_open else entry_index + 1
+        for candidate_index in range(first_exit_index, max_exit_index + 1):
             candidate = simulation_df.iloc[candidate_index]
             stop_loss_triggered = (
                 float(candidate["low"]) <= stop_loss_price
