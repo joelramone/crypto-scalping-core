@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--execution-mode", choices=["signal_close", "next_bar_open"], default="signal_close")
     parser.add_argument("--json", action="store_true", help="Fixed baseline_trend/1m metrics; requires --expected-sha256")
+    parser.add_argument("--loss-attribution", action="store_true", help="Attribute completed trades in the same JSON next-open run; does not load a previous summary")
     parser.add_argument("--expected-sha256", help="Reject dataset bytes that do not match this SHA-256")
     return parser.parse_args()
 
@@ -169,6 +170,9 @@ def diagnostic_report(result, strategy, digest, identity, duration, execution_mo
 
 def run_backtest(args) -> None:
     started = time.perf_counter()
+    attribution = getattr(args, "loss_attribution", False)
+    if attribution and (not args.json or args.execution_mode != "next_bar_open"):
+        raise ValueError("--loss-attribution requires --json and --execution-mode next_bar_open")
     if args.json and (args.strategy != "baseline_trend" or args.timeframe != "1m" or not args.expected_sha256):
         raise ValueError("JSON diagnostic requires baseline_trend, 1m and --expected-sha256")
     identity = code_identity() if args.json else None
@@ -200,6 +204,9 @@ def run_backtest(args) -> None:
         report = diagnostic_report(backtest_result, strategy, digest, identity,
                                    time.perf_counter() - started, args.execution_mode, raw_df, featured_df)
         report["dataset"]["path"] = str(args.data)
+        if attribution:
+            from app.research.analysis.trade_diagnostics import calculate_loss_attribution
+            report["loss_attribution"] = calculate_loss_attribution(backtest_result.trades)
         print(json.dumps(report, sort_keys=True, indent=2, allow_nan=False))
     else:
         print_backtest_metrics(strategy.name(), backtest_result.metrics, args.timeframe)

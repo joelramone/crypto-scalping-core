@@ -176,3 +176,32 @@ def calculate_trade_diagnostics(
         worst_month=min(monthly, key=lambda item: item.net_pnl).month if monthly else None,
         positive_pnl_concentration_top_2_months=top_two / total_positive if total_positive else 0.0,
     )
+
+
+def calculate_loss_attribution(trades: list[BacktestTrade]) -> dict[str, Any]:
+    """Read completed records only; reuse diagnostics, with no simulation or writes."""
+    diagnostics = calculate_trade_diagnostics(trades)
+    by_exit = {}
+    for reason, item in diagnostics.exits.items():
+        group = [trade for trade in trades if trade.exit_reason == reason]
+        by_exit[reason] = {
+            "trades": item.count, "gross_pnl": sum(trade.gross_pnl for trade in group),
+            "net_pnl": item.net_pnl, "total_fees": sum(trade.fees for trade in group),
+        }
+    return {
+        "by_exit_reason": by_exit,
+        "wins": diagnostics.wins, "losses": diagnostics.losses, "flats": diagnostics.flats,
+        "average_net_winner": diagnostics.average_winner,
+        "average_net_loser": diagnostics.average_loser,
+        "mean_holding_candles": diagnostics.average_holding,
+        "median_holding_candles": diagnostics.median_holding,
+        "holding_measurement": "exit_index minus entry_index; 1m bars, same-bar exit = 0; exact intrabar elapsed time is unobserved",
+        "gross_pnl_per_trade": diagnostics.gross_expectancy,
+        "net_pnl_per_trade": diagnostics.net_expectancy,
+        "total_fee_burden_usdt": diagnostics.total_fees,
+        "fees_per_trade": diagnostics.fee_expectancy,
+        "totals": {"trades": diagnostics.completed_trades,
+                   "gross_pnl": diagnostics.gross_pnl_before_fees,
+                   "net_pnl": diagnostics.net_pnl, "total_fees": diagnostics.total_fees},
+        "outcome_definition": "wins: net > 0; losses: net < 0; flats: net = 0",
+    }
