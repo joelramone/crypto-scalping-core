@@ -47,3 +47,25 @@ Such an interrupted pair is not success; inspect it manually before recovery.
 Never delete or overwrite an existing valid dataset to rerun. Either existing
 CSV or manifest blocks acquisition before any request. Binance availability,
 regional access and actual historical completeness remain untested in Cloud.
+
+## TASK-020: read-only loader/resampling integration
+
+After checking out the reviewed integration change, use the same environment
+and run this command from repository root in Windows CMD:
+
+```bat
+.venv-local\Scripts\python.exe -m app.research.data_validation.check_integration --input data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv --manifest data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv.manifest.json
+```
+
+Success prints JSON with `status: INTEGRATION_VALIDATED`, verified SHA-256,
+schema/UTC/continuity flags and `resampled` counts 10080 (1m), 2016 (5m), 672
+(15m). Failure prints `INTEGRATION_BLOCKED` and exits with code 2. The command
+writes no files, downloads nothing and executes no strategy or performance
+calculation. It reads only the authorized local dataset and adjacent manifest;
+the expected checksum is pinned to the operator's independently verified file.
+
+Existing resampling is UTC, left-closed and labeled by opening time. Each
+aggregate is available only at its bucket end, not at its label. The check
+requires all constituent minutes in every bucket; it does not fill gaps,
+interpolate, calculate indicators or change simulator semantics. Passing is
+technical compatibility only, not authorization for a trading experiment.
