@@ -112,3 +112,28 @@ fully executable, not verified bid/ask fills. Drawdown uses closed trades, not
 intratrade equity; seven days, possible zero trades and indicator warm-up cannot
 establish profitability. No historical diagnostic has been run or authorized by
 this code delivery. Windows execution itself remains untested in Cloud.
+
+## TASK-022: optional loss attribution
+
+For a separately authorized future diagnostic only, add `--loss-attribution`:
+
+```bat
+.venv-local\Scripts\python.exe -m app.research.backtester --data data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv --strategy baseline_trend --timeframe 1m --execution-mode next_bar_open --expected-sha256 f04bbaf8b8fe5a333bd5e67891cec081fea4b9dba8850a3166bbbfb9e3893c5f --json --loss-attribution
+```
+
+This runs the diagnostic once and groups its existing completed trade records;
+it does not reconstruct trades from an earlier summary or run a simulator per
+metric. If only the earlier aggregate JSON was saved, its missing per-trade
+information cannot be recovered without separately authorizing another run.
+No historical run is authorized by this preparation task.
+
+`loss_attribution` includes counts, gross/net PnL and fees by exit reason
+(including zero-count strategy exits), net wins/losses/flats, average net winner
+and loser, mean/median holding, gross/net PnL per trade and total/per-trade fees.
+Wins mean net > 0, losses net < 0 and flats net = 0; a TP can lose after fees.
+Holding uses the existing trade index difference in 1m candles (same-bar exit
+is zero), not the inclusive holding ceiling or exact intrabar elapsed time.
+Zero-trade/empty groups yield zeros. No rounding or residual adjustments are
+applied; floating-point grouped sums may differ at machine precision. Totals
+reuse the same chronological trade sums as existing metrics. Attribution is
+read-only, makes no governance verdict, and leaves execution semantics unchanged.
