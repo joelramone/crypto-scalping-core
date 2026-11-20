@@ -166,13 +166,25 @@ class BlockResearchExecution:
 sys.meta_path.insert(0, BlockResearchExecution())
 from app.research.automation.analyze_existing import main
 source, output = sys.argv[1:]
+# numpy/pandas may lazily load their own modules (e.g. numpy.rec) or read OS
+# introspection files (e.g. /sys/fs/cgroup/cpu.max) depending on the installed
+# versions. Those read-only accesses are not research data and are allowed;
+# every other path, including anything in the repository, stays forbidden.
+RUNTIME_ROOTS = tuple({Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix)}
+                      | {Path('/sys'), Path('/proc')})
+def is_runtime_read(target, mode):
+    read_only = isinstance(mode, str) and not any(flag in mode for flag in 'wax+')
+    return read_only and any(target.is_relative_to(root) for root in RUNTIME_ROOTS)
 def audit(event, args):
     if event in ('subprocess.Popen', 'os.system', 'socket.connect'):
         raise AssertionError('Forbidden execution/network operation: ' + event)
     if event == 'open' and isinstance(args[0], (str, bytes)):
-        target = Path(args[0]).resolve()
-        if target not in {Path(source).resolve(), Path(output).resolve()}:
-            raise AssertionError('Unexpected file access: ' + str(target))
+        target = Path(args[0].decode() if isinstance(args[0], bytes) else args[0]).resolve()
+        if target in {Path(source).resolve(), Path(output).resolve()}:
+            return
+        if is_runtime_read(target, args[1]):
+            return
+        raise AssertionError('Unexpected file access: ' + str(target))
 sys.addaudithook(audit)
 sys.argv = ['analyze_existing', source, '--output', output]
 main()
