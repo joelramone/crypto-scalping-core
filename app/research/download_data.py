@@ -27,10 +27,13 @@ AUTHORIZED_OUTPUT = Path("data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv")
 # Exact owner-authorized acquisition scopes: (start inclusive, end exclusive, output).
 # TASK-019B: technical validation only (not fresh research data).
 # TASK-032B: Dataset A for the frozen Aggressor Flow Persistence V1 study.
+# TASK-033B: Dataset B for the frozen Volatility Expansion Breakout V1 study.
 AUTHORIZED_SCOPES: dict[str, tuple[str, str, Path]] = {
     "TASK-019B": (AUTHORIZED_START, AUTHORIZED_END, AUTHORIZED_OUTPUT),
     "TASK-032B": ("2023-01-01T00:00:00Z", "2023-04-15T00:00:00Z",
                   Path("data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv")),
+    "TASK-033B": ("2023-04-15T00:00:00Z", "2024-01-01T00:00:00Z",
+                  Path("data/binance_usdm_BTCUSDT_1m_20230415_20240101.csv")),
 }
 VOLUME_UNITS = {"volume": "BTC (base asset)", "taker_buy_base_volume": "BTC (base asset)",
                 "quote_volume": "USDT (quote asset)", "taker_buy_quote_volume": "USDT (quote asset)"}
@@ -215,7 +218,7 @@ def validate_execution(config: DownloadConfig, exchange: str, product: str) -> s
     scope = matching_scope(config)
     if (exchange != "binance" or product != "usdm-futures" or scope is None or
             (Path.cwd() / "data").is_symlink()):
-        raise ValueError("Execution scope does not match an exact authorized scope (TASK-019B or TASK-032B)")
+        raise ValueError("Execution scope does not match an exact authorized scope (TASK-019B, TASK-032B or TASK-033B)")
     return scope
 
 
@@ -382,7 +385,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Show plan only, without network or writes")
-    mode.add_argument("--execute-authorized-download", action="store_true", help="Execute only an exact authorized scope (TASK-019B or TASK-032B) on the operator computer")
+    mode.add_argument("--execute-authorized-download", action="store_true", help="Execute only an exact authorized scope (TASK-019B, TASK-032B or TASK-033B) on the operator computer")
     return parser
 
 

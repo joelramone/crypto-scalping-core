@@ -197,3 +197,20 @@ def test_invalid_taker_or_price_blocks_publication(tmp_path, monkeypatch, column
     with pytest.raises(ValueError):
         subject.download_binance_futures_klines(c)
     assert not c.output.exists() and not subject.manifest_path(c.output).exists()
+
+
+# TASK-033B: Dataset B (2023-04-15 .. 2024-01-01 exclusive), synthetic rows only.
+def dataset_b():
+    start, end, output = subject.AUTHORIZED_SCOPES["TASK-033B"]
+    return subject.DownloadConfig(symbol="BTCUSDT", interval="1m", start=start, end=end, output=output)
+
+
+def test_dataset_b_scope_accepted_and_neighbours_rejected(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert subject.validate_execution(dataset_b(), "binance", "usdm-futures") == "TASK-033B"
+    for changes in (dict(start="2023-04-14"), dict(end="2024-01-02"), dict(end="2023-12-31"),
+                    dict(output=dataset_a().output), dict(output=Path("data/other.csv"))):
+        with pytest.raises(ValueError):
+            subject.validate_execution(subject.DownloadConfig(**(dataset_b().model_dump() | changes)),
+                                       "binance", "usdm-futures")
+    assert subject.preparation_plan(dataset_b())["expected_candles"] == 375_840

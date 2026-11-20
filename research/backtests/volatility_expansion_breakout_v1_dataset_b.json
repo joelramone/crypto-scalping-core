@@ -1,0 +1,334 @@
+{
+  "dataset": {
+    "candles_15m": 25056,
+    "first": "2023-04-15 00:00:00+00:00",
+    "last": "2023-12-31 23:45:00+00:00",
+    "path": "data/binance_usdm_BTCUSDT_1m_20230415_20240101.csv",
+    "rows_1m": 375840,
+    "sha256": "6f29fa337d2dc24a5047124245fed96cce8a57f48aaa6ccbbc38bf492b010d80"
+  },
+  "expansion_frequency": 0.08061220401458392,
+  "frozen": {
+    "atr_lookback": 96,
+    "execution_mode": "next_bar_open",
+    "expansion_mult": 2.0,
+    "fee_rate_per_side": 0.0004,
+    "loc_high": 0.75,
+    "loc_low": 0.25,
+    "max_holding_candles": 32,
+    "stop_loss_pct": 0.006,
+    "take_profit_pct": 0.01
+  },
+  "hypothesis_id": "HYP-VOLATILITY-EXPANSION-BREAKOUT-001",
+  "hypothesis_verdict": "BASELINE_REJECT",
+  "legs": {
+    "long": {
+      "diagnostics": {
+        "actual_minus_break_even_win_rate": -0.09977661955855044,
+        "average_holding": 10.773333333333333,
+        "average_loser": -0.6334174507083151,
+        "average_winner": 0.7769664577970493,
+        "best_month": "2023-09",
+        "break_even_win_rate": 0.44910995289188377,
+        "completed_trades": 375,
+        "exits": {
+          "max_holding": {
+            "count": 55,
+            "net_pnl": 3.216587998584542,
+            "percentage": 0.14666666666666667
+          },
+          "stop_loss": {
+            "count": 219,
+            "net_pnl": -148.86744000000007,
+            "percentage": 0.584
+          },
+          "strategy_exit": {
+            "count": 0,
+            "net_pnl": 0.0,
+            "percentage": 0.0
+          },
+          "take_profit": {
+            "count": 101,
+            "net_pnl": 92.87960000000001,
+            "percentage": 0.2693333333333333
+          }
+        },
+        "fee_expectancy": 0.07997570094490979,
+        "flats": 0,
+        "gross_expectancy": -0.060747637725531385,
+        "gross_loss_before_fees": 135.34397731847048,
+        "gross_pnl_before_fees": -22.78036414707427,
+        "gross_profit_before_fees": 112.56361317139621,
+        "gross_profit_factor": 0.8316854240697313,
+        "holding_p25": 2.0,
+        "holding_p75": 15.5,
+        "holding_p95": 31.0,
+        "losses": 244,
+        "median_holding": 7.0,
+        "median_loser": -0.6797599999999993,
+        "median_winner": 0.9195999999999993,
+        "monthly": [
+          {
+            "expectancy": -0.08977712820132278,
+            "month": "2023-04",
+            "net_pnl": -2.5137595896370377,
+            "profit_factor": 0.7708346223822425,
+            "profitable": false,
+            "trades": 28
+          },
+          {
+            "expectancy": -0.1280020317028253,
+            "month": "2023-05",
+            "net_pnl": -5.504087363221488,
+            "profit_factor": 0.6949787367566178,
+            "profitable": false,
+            "trades": 43
+          },
+          {
+            "expectancy": -0.15074216647138164,
+            "month": "2023-06",
+            "net_pnl": -7.537108323569082,
+            "profit_factor": 0.6330754248548148,
+            "profitable": false,
+            "trades": 50
+          },
+          {
+            "expectancy": -0.10869078170488322,
+            "month": "2023-07",
+            "net_pnl": -4.238940486490446,
+            "profit_factor": 0.7074844128551324,
+            "profitable": false,
+            "trades": 39
+          },
+          {
+            "expectancy": -0.2386972545726685,
+            "month": "2023-08",
+            "net_pnl": -12.173559983206093,
+            "profit_factor": 0.4331207383413343,
+            "profitable": false,
+            "trades": 51
+          },
+          {
+            "expectancy": 0.002416655203241182,
+            "month": "2023-09",
+            "net_pnl": 0.08458293211344137,
+            "profit_factor": 1.0071289272289845,
+            "profitable": true,
+            "trades": 35
+          },
+          {
+            "expectancy": -0.045200619059444294,
+            "month": "2023-10",
+            "net_pnl": -1.8080247623777719,
+            "profit_factor": 0.8830018662674538,
+            "profitable": false,
+            "trades": 40
+          },
+          {
+            "expectancy": -0.048302566131808757,
+            "month": "2023-11",
+            "net_pnl": -2.028707777535968,
+            "profit_factor": 0.8806221150090641,
+            "profitable": false,
+            "trades": 42
+          },
+          {
+            "expectancy": -0.36280099249980846,
+            "month": "2023-12",
+            "net_pnl": -17.051646647490998,
+            "profit_factor": 0.31021419160595715,
+            "profitable": false,
+            "trades": 47
+          }
+        ],
+        "negative_months": 8,
+        "net_expectancy": -0.14072333867044118,
+        "net_pnl": -52.77125200141544,
+        "net_profit_factor": 0.658557523612948,
+        "payoff_ratio": 1.2266262271874755,
+        "positive_months": 1,
+        "positive_pnl_concentration_top_2_months": 1.0,
+        "profitable_month_percentage": 0.1111111111111111,
+        "raw_entry_signals": 499,
+        "raw_signals_per_opened_trade": 1.3306666666666667,
+        "suppressed_signals": 99,
+        "suppression_rate": 0.19839679358717435,
+        "total_fees": 29.99088785434117,
+        "win_rate": 0.34933333333333333,
+        "wins": 131,
+        "worst_month": "2023-12"
+      },
+      "moves": {
+        "post_signal_open_t_plus_1_to_close_t_plus_32": {
+          "fraction_positive": 0.48296593186372744,
+          "mean": 9.362797572205853e-06,
+          "median": -0.000181915536273336,
+          "n": 499
+        },
+        "round_trip_fee_fraction": 0.0008,
+        "signal_candle_open_t_to_close_t": {
+          "fraction_positive": 1.0,
+          "mean": 0.004623076261767353,
+          "median": 0.003560708195735618,
+          "n": 499
+        }
+      },
+      "strategy": "volatility_expansion_breakout_v1_long",
+      "verdict": "BASELINE_REJECT"
+    },
+    "short": {
+      "diagnostics": {
+        "actual_minus_break_even_win_rate": -0.05935905996022123,
+        "average_holding": 12.850152905198776,
+        "average_loser": -0.6197900037715688,
+        "average_winner": 0.7099835186970973,
+        "best_month": "2023-08",
+        "break_even_win_rate": 0.4660868887063986,
+        "completed_trades": 327,
+        "exits": {
+          "max_holding": {
+            "count": 68,
+            "net_pnl": 6.313107255029637,
+            "percentage": 0.20795107033639143
+          },
+          "stop_loss": {
+            "count": 169,
+            "net_pnl": -114.9605600000001,
+            "percentage": 0.5168195718654435
+          },
+          "strategy_exit": {
+            "count": 0,
+            "net_pnl": 0.0,
+            "percentage": 0.0
+          },
+          "take_profit": {
+            "count": 90,
+            "net_pnl": 82.836,
+            "percentage": 0.27522935779816515
+          }
+        },
+        "fee_expectancy": 0.0799995738129763,
+        "flats": 0,
+        "gross_expectancy": 0.001065467559244159,
+        "gross_loss_before_fees": 104.88821270785459,
+        "gross_pnl_before_fees": 0.34840789187284,
+        "gross_profit_before_fees": 105.23662059972743,
+        "gross_profit_factor": 1.0033217068236566,
+        "holding_p25": 3.0,
+        "holding_p75": 25.0,
+        "holding_p95": 31.0,
+        "losses": 194,
+        "median_holding": 8.0,
+        "median_loser": -0.6802399999999992,
+        "median_winner": 0.9203999999999971,
+        "monthly": [
+          {
+            "expectancy": -0.14669333333333384,
+            "month": "2023-04",
+            "net_pnl": -2.640480000000009,
+            "profit_factor": 0.6765259320239907,
+            "profitable": false,
+            "trades": 18
+          },
+          {
+            "expectancy": -0.062512128229998,
+            "month": "2023-05",
+            "net_pnl": -2.4379730009699223,
+            "profit_factor": 0.8249885390096523,
+            "profitable": false,
+            "trades": 39
+          },
+          {
+            "expectancy": -0.018343106631089054,
+            "month": "2023-06",
+            "net_pnl": -0.6053225188259388,
+            "profit_factor": 0.9510159889308673,
+            "profitable": false,
+            "trades": 33
+          },
+          {
+            "expectancy": -0.014634546726748847,
+            "month": "2023-07",
+            "net_pnl": -0.42440185507571654,
+            "profit_factor": 0.9557539416738382,
+            "profitable": false,
+            "trades": 29
+          },
+          {
+            "expectancy": 0.19389137624462924,
+            "month": "2023-08",
+            "net_pnl": 8.725111931008316,
+            "profit_factor": 1.9269605954410252,
+            "profitable": true,
+            "trades": 45
+          },
+          {
+            "expectancy": -0.037201239141748235,
+            "month": "2023-09",
+            "net_pnl": -1.562452043953426,
+            "profit_factor": 0.8844865771631186,
+            "profitable": false,
+            "trades": 42
+          },
+          {
+            "expectancy": -0.30154463720989266,
+            "month": "2023-10",
+            "net_pnl": -14.172597948864956,
+            "profit_factor": 0.35923154018172415,
+            "profitable": false,
+            "trades": 47
+          },
+          {
+            "expectancy": -0.104482072689087,
+            "month": "2023-11",
+            "net_pnl": -4.388247052941654,
+            "profit_factor": 0.7251613835560361,
+            "profitable": false,
+            "trades": 42
+          },
+          {
+            "expectancy": -0.25953407047959687,
+            "month": "2023-12",
+            "net_pnl": -8.3050902553471,
+            "profit_factor": 0.45264366095578495,
+            "profitable": false,
+            "trades": 32
+          }
+        ],
+        "negative_months": 8,
+        "net_expectancy": -0.07893410625373212,
+        "net_pnl": -25.811452744970406,
+        "net_profit_factor": 0.7853325728393404,
+        "payoff_ratio": 1.1455227002318198,
+        "positive_months": 1,
+        "positive_pnl_concentration_top_2_months": 1.0,
+        "profitable_month_percentage": 0.1111111111111111,
+        "raw_entry_signals": 436,
+        "raw_signals_per_opened_trade": 1.3333333333333333,
+        "suppressed_signals": 97,
+        "suppression_rate": 0.22247706422018348,
+        "total_fees": 26.159860636843252,
+        "win_rate": 0.40672782874617736,
+        "wins": 133,
+        "worst_month": "2023-10"
+      },
+      "moves": {
+        "post_signal_open_t_plus_1_to_close_t_plus_32": {
+          "fraction_positive": 0.4701834862385321,
+          "mean": -0.0012475975788498984,
+          "median": -0.0004405381899674765,
+          "n": 436
+        },
+        "round_trip_fee_fraction": 0.0008,
+        "signal_candle_open_t_to_close_t": {
+          "fraction_positive": 1.0,
+          "mean": 0.004656643521493032,
+          "median": 0.0034469504171874554,
+          "n": 436
+        }
+      },
+      "strategy": "volatility_expansion_breakout_v1_short",
+      "verdict": "BASELINE_REJECT"
+    }
+  }
+}
