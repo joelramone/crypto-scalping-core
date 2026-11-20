@@ -150,3 +150,50 @@ def test_failed_acquisition_no_csv_or_manifest(tmp_path, monkeypatch, failure):
         subject.download_binance_futures_klines(c)
     assert not c.output.exists() and not subject.manifest_path(c.output).exists()
     assert not list(tmp_path.glob(".ohlcv-*.tmp"))
+
+
+# TASK-032B: Dataset A (2023-01-01 .. 2023-04-15 exclusive), synthetic rows only.
+def dataset_a():
+    start, end, output = subject.AUTHORIZED_SCOPES["TASK-032B"]
+    return subject.DownloadConfig(symbol="BTCUSDT", interval="1m", start=start, end=end, output=output)
+
+
+def test_dataset_a_scope_accepted_and_neighbours_rejected(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert subject.validate_execution(dataset_a(), "binance", "usdm-futures") == "TASK-032B"
+    assert subject.validate_execution(authorized(), "binance", "usdm-futures") == "TASK-019B"
+    for changes in (dict(start="2022-12-31"), dict(end="2023-04-16"), dict(end="2023-04-14"),
+                    dict(output=subject.AUTHORIZED_OUTPUT),  # cross-scope output swap
+                    dict(output=Path("data/other.csv"))):
+        with pytest.raises(ValueError):
+            subject.validate_execution(subject.DownloadConfig(**(dataset_a().model_dump() | changes)),
+                                       "binance", "usdm-futures")
+    assert subject.preparation_plan(dataset_a())["expected_candles"] == 149_760
+
+
+def test_dataset_a_complete_mock_download(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    c = dataset_a(); start, end = subject.validate_preparation(c)
+    fixture = rows(start, range(149_760))
+    fetch = Mock(side_effect=lambda s, cfg, offset, last: fixture[(offset - start) // 60000:][:subject.MAX_LIMIT])
+    monkeypatch.setattr(subject, "fetch_klines_page", fetch)
+    subject.download_binance_futures_klines(c)
+    metadata = json.loads(subject.manifest_path(c.output).read_text())
+    assert metadata["row_count"] == 149_760 and fetch.call_count == 100
+    assert metadata["first_timestamp_utc"] == "2023-01-01T00:00:00+00:00"
+    assert metadata["last_timestamp_utc"] == "2023-04-14T23:59:00+00:00"
+    assert metadata["authorization_scope"] == "TASK-032B"
+    assert metadata["units"]["taker_buy_base_volume"].startswith("BTC")
+    assert metadata["integrity_checks"]["unique_rows"] == 149_760
+    assert metadata["sha256"] == hashlib.sha256(c.output.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("column,value", [(9, "1.5"), (9, "-0.1"), (9, "nan"), (1, "0"), (3, "-1")])
+def test_invalid_taker_or_price_blocks_publication(tmp_path, monkeypatch, column, value):
+    c = config(tmp_path); start, _ = subject.validate_preparation(c)
+    fixture = rows(start)
+    fixture[1][column] = value
+    monkeypatch.setattr(subject, "fetch_klines_page", Mock(side_effect=[fixture, []]))
+    with pytest.raises(ValueError):
+        subject.download_binance_futures_klines(c)
+    assert not c.output.exists() and not subject.manifest_path(c.output).exists()
