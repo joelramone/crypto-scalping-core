@@ -1,0 +1,252 @@
+{
+  "dataset": {
+    "candles_5m": 29952,
+    "first": "2023-01-01 00:00:00+00:00",
+    "last": "2023-04-14 23:55:00+00:00",
+    "path": "data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv",
+    "rows_1m": 149760,
+    "sha256": "2a49857054bf14663fd2a91a6980254883be6d3d84e5147ff5750155a40607af"
+  },
+  "frozen": {
+    "execution_mode": "next_bar_open",
+    "fee_rate_per_side": 0.0004,
+    "k": 3,
+    "max_holding_candles": 12,
+    "stop_loss_pct": 0.004,
+    "take_profit_pct": 0.006,
+    "theta": 0.1
+  },
+  "hypothesis_id": "HYP-AGGRESSOR-FLOW-PERSISTENCE-001",
+  "hypothesis_verdict": "BASELINE_REJECT",
+  "imbalance_share_abs_ge_theta": 0.6453659188034188,
+  "legs": {
+    "long": {
+      "diagnostics": {
+        "actual_minus_break_even_win_rate": -0.15270578591196143,
+        "average_holding": 8.640933572710951,
+        "average_loser": -0.2627626787007865,
+        "average_winner": 0.29361386227500735,
+        "best_month": "2023-04",
+        "break_even_win_rate": 0.4722749061992146,
+        "completed_trades": 557,
+        "exits": {
+          "max_holding": {
+            "count": 355,
+            "net_pnl": -28.364907742646697,
+            "percentage": 0.6373429084380611
+          },
+          "stop_loss": {
+            "count": 124,
+            "net_pnl": -59.500160000000115,
+            "percentage": 0.22262118491921004
+          },
+          "strategy_exit": {
+            "count": 0,
+            "net_pnl": 0.0,
+            "percentage": 0.0
+          },
+          "take_profit": {
+            "count": 78,
+            "net_pnl": 40.54128000000008,
+            "percentage": 0.1400359066427289
+          }
+        },
+        "fee_expectancy": 0.07999801443899453,
+        "flats": 0,
+        "gross_expectancy": -0.004963902513692714,
+        "gross_loss_before_fees": 71.97835245074336,
+        "gross_pnl_before_fees": -2.7648937001268417,
+        "gross_profit_before_fees": 69.21345875061651,
+        "gross_profit_factor": 0.961587149386075,
+        "holding_p25": 6.0,
+        "holding_p75": 11.0,
+        "holding_p95": 11.0,
+        "losses": 379,
+        "median_holding": 11.0,
+        "median_loser": -0.22018279413898798,
+        "median_winner": 0.2517697014170329,
+        "monthly": [
+          {
+            "expectancy": -0.08237488531730562,
+            "month": "2023-01",
+            "net_pnl": -14.415604930528483,
+            "profit_factor": 0.49397776754295286,
+            "profitable": false,
+            "trades": 175
+          },
+          {
+            "expectancy": -0.0981056835380155,
+            "month": "2023-02",
+            "net_pnl": -15.402592315468434,
+            "profit_factor": 0.4627225476100564,
+            "profitable": false,
+            "trades": 157
+          },
+          {
+            "expectancy": -0.09993528838261137,
+            "month": "2023-03",
+            "net_pnl": -13.990940373565591,
+            "profit_factor": 0.5334031483879633,
+            "profitable": false,
+            "trades": 140
+          },
+          {
+            "expectancy": -0.041348824977462145,
+            "month": "2023-04",
+            "net_pnl": -3.5146501230842824,
+            "profit_factor": 0.717608994632377,
+            "profitable": false,
+            "trades": 85
+          }
+        ],
+        "negative_months": 4,
+        "net_expectancy": -0.08496191695268725,
+        "net_pnl": -47.32378774264679,
+        "net_profit_factor": 0.5247998082231458,
+        "payoff_ratio": 1.1174108276211925,
+        "positive_months": 0,
+        "positive_pnl_concentration_top_2_months": 0.0,
+        "profitable_month_percentage": 0.0,
+        "raw_entry_signals": 631,
+        "raw_signals_per_opened_trade": 1.132854578096948,
+        "suppressed_signals": 74,
+        "suppression_rate": 0.11727416798732171,
+        "total_fees": 44.55889404251995,
+        "win_rate": 0.31956912028725315,
+        "wins": 178,
+        "worst_month": "2023-02"
+      },
+      "moves": {
+        "contemporaneous_open_t_minus_2_to_close_t": {
+          "fraction_positive": 0.993660855784469,
+          "mean": 0.0026773374961884364,
+          "median": 0.0018550490394151353,
+          "n": 631
+        },
+        "post_observation_open_t_plus_1_to_close_t_plus_12": {
+          "fraction_positive": 0.4611727416798732,
+          "mean": -0.00015638030736427137,
+          "median": -0.000194949657118082,
+          "n": 631
+        },
+        "round_trip_fee_fraction": 0.0008
+      },
+      "strategy": "aggressor_flow_persistence_v1_long",
+      "verdict": "BASELINE_REJECT"
+    },
+    "short": {
+      "diagnostics": {
+        "actual_minus_break_even_win_rate": -0.19814007559238106,
+        "average_holding": 8.858024691358025,
+        "average_loser": -0.2619468268802392,
+        "average_winner": 0.2629272901369873,
+        "best_month": "2023-04",
+        "break_even_win_rate": 0.499066001518307,
+        "completed_trades": 648,
+        "exits": {
+          "max_holding": {
+            "count": 428,
+            "net_pnl": -32.78429100003579,
+            "percentage": 0.6604938271604939
+          },
+          "stop_loss": {
+            "count": 149,
+            "net_pnl": -71.5438400000001,
+            "percentage": 0.22993827160493827
+          },
+          "strategy_exit": {
+            "count": 0,
+            "net_pnl": 0.0,
+            "percentage": 0.0
+          },
+          "take_profit": {
+            "count": 71,
+            "net_pnl": 36.93704000000008,
+            "percentage": 0.1095679012345679
+          }
+        },
+        "fee_expectancy": 0.08000959560064866,
+        "flats": 0,
+        "gross_expectancy": -0.023989001621628835,
+        "gross_loss_before_fees": 85.460841731633,
+        "gross_pnl_before_fees": -15.544873050815484,
+        "gross_profit_before_fees": 69.91596868081751,
+        "gross_profit_factor": 0.8181053130785908,
+        "holding_p25": 7.0,
+        "holding_p75": 11.0,
+        "holding_p95": 11.0,
+        "losses": 453,
+        "median_holding": 11.0,
+        "median_loser": -0.2183243195939378,
+        "median_winner": 0.20735695760806563,
+        "monthly": [
+          {
+            "expectancy": -0.12176962751162844,
+            "month": "2023-01",
+            "net_pnl": -23.50153810974429,
+            "profit_factor": 0.30056945363006404,
+            "profitable": false,
+            "trades": 193
+          },
+          {
+            "expectancy": -0.07703274384652624,
+            "month": "2023-02",
+            "net_pnl": -14.405123099300408,
+            "profit_factor": 0.5507245468845574,
+            "profitable": false,
+            "trades": 187
+          },
+          {
+            "expectancy": -0.11492915163098358,
+            "month": "2023-03",
+            "net_pnl": -19.30809747400524,
+            "profit_factor": 0.45933711253140674,
+            "profitable": false,
+            "trades": 168
+          },
+          {
+            "expectancy": -0.10176332316985875,
+            "month": "2023-04",
+            "net_pnl": -10.176332316985876,
+            "profit_factor": 0.4112978392997195,
+            "profitable": false,
+            "trades": 100
+          }
+        ],
+        "negative_months": 4,
+        "net_expectancy": -0.10399859722227749,
+        "net_pnl": -67.39109100003581,
+        "net_profit_factor": 0.43207479521747555,
+        "payoff_ratio": 1.0037429858129046,
+        "positive_months": 0,
+        "positive_pnl_concentration_top_2_months": 0.0,
+        "profitable_month_percentage": 0.0,
+        "raw_entry_signals": 792,
+        "raw_signals_per_opened_trade": 1.2222222222222223,
+        "suppressed_signals": 144,
+        "suppression_rate": 0.18181818181818182,
+        "total_fees": 51.84621794922033,
+        "win_rate": 0.30092592592592593,
+        "wins": 195,
+        "worst_month": "2023-01"
+      },
+      "moves": {
+        "contemporaneous_open_t_minus_2_to_close_t": {
+          "fraction_positive": 0.9835858585858586,
+          "mean": 0.002242406162627569,
+          "median": 0.001552654819427679,
+          "n": 792
+        },
+        "post_observation_open_t_plus_1_to_close_t_plus_12": {
+          "fraction_positive": 0.4318181818181818,
+          "mean": -0.00032615008025184227,
+          "median": -0.00030249951405481035,
+          "n": 792
+        },
+        "round_trip_fee_fraction": 0.0008
+      },
+      "strategy": "aggressor_flow_persistence_v1_short",
+      "verdict": "BASELINE_REJECT"
+    }
+  }
+}

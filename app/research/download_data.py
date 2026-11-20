@@ -24,6 +24,16 @@ REQUEST_SLEEP_SECONDS = 0.2
 AUTHORIZED_START = "2024-10-01T00:00:00Z"
 AUTHORIZED_END = "2024-10-08T00:00:00Z"
 AUTHORIZED_OUTPUT = Path("data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv")
+# Exact owner-authorized acquisition scopes: (start inclusive, end exclusive, output).
+# TASK-019B: technical validation only (not fresh research data).
+# TASK-032B: Dataset A for the frozen Aggressor Flow Persistence V1 study.
+AUTHORIZED_SCOPES: dict[str, tuple[str, str, Path]] = {
+    "TASK-019B": (AUTHORIZED_START, AUTHORIZED_END, AUTHORIZED_OUTPUT),
+    "TASK-032B": ("2023-01-01T00:00:00Z", "2023-04-15T00:00:00Z",
+                  Path("data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv")),
+}
+VOLUME_UNITS = {"volume": "BTC (base asset)", "taker_buy_base_volume": "BTC (base asset)",
+                "quote_volume": "USDT (quote asset)", "taker_buy_quote_volume": "USDT (quote asset)"}
 
 INTERVAL_TO_MS: dict[str, int] = {
     "1m": 60_000,
@@ -191,14 +201,22 @@ def manifest_path(output: Path) -> Path:
     return output.with_suffix(output.suffix + ".manifest.json")
 
 
-def validate_execution(config: DownloadConfig, exchange: str, product: str) -> None:
-    start, end = validate_preparation(config)
-    if (exchange != "binance" or product != "usdm-futures" or
-            start != parse_datetime_to_utc_ms(AUTHORIZED_START) or
-            end != parse_datetime_to_utc_ms(AUTHORIZED_END) or
-            config.output.resolve() != (Path.cwd() / AUTHORIZED_OUTPUT).resolve() or
+def matching_scope(config: DownloadConfig) -> str | None:
+    start, end = parse_datetime_to_utc_ms(config.start), parse_datetime_to_utc_ms(config.end)
+    for scope, (scope_start, scope_end, scope_output) in AUTHORIZED_SCOPES.items():
+        if (start == parse_datetime_to_utc_ms(scope_start) and end == parse_datetime_to_utc_ms(scope_end) and
+                config.output.resolve() == (Path.cwd() / scope_output).resolve()):
+            return scope
+    return None
+
+
+def validate_execution(config: DownloadConfig, exchange: str, product: str) -> str:
+    validate_preparation(config)
+    scope = matching_scope(config)
+    if (exchange != "binance" or product != "usdm-futures" or scope is None or
             (Path.cwd() / "data").is_symlink()):
-        raise ValueError("Execution scope does not match the exact TASK-019B authorization")
+        raise ValueError("Execution scope does not match an exact authorized scope (TASK-019B or TASK-032B)")
+    return scope
 
 
 def preparation_plan(config: DownloadConfig) -> dict[str, Any]:
@@ -227,6 +245,17 @@ def validate_download_frame(dataframe: pd.DataFrame, start: int, end: int) -> No
     numeric = dataframe[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
     if not numeric.map(math.isfinite).all().all():
         raise ValueError("OHLCV must contain finite numeric values")
+    if not (numeric[["open", "high", "low", "close"]] > 0).all().all():
+        raise ValueError("OHLC prices must be strictly positive")
+    if "taker_buy_base_volume" in dataframe.columns:
+        taker = pd.to_numeric(dataframe["taker_buy_base_volume"], errors="coerce")
+        if not taker.map(math.isfinite).all():
+            raise ValueError("taker_buy_base_volume must be finite")
+        if (taker < 0).any() or (taker > numeric["volume"]).any():
+            raise ValueError("taker_buy_base_volume must lie within [0, volume]")
+    timestamps = pd.to_datetime(dataframe["timestamp"], utc=True)
+    if timestamps.duplicated().any() or not (timestamps.diff().iloc[1:].dt.total_seconds() == 60).all():
+        raise ValueError("Timestamps must be unique with exact 60-second spacing")
     expected_count = (end - start) // 60_000
     expected_start = pd.to_datetime(start, unit="ms", utc=True)
     expected_end = pd.to_datetime(end - 60_000, unit="ms", utc=True)
@@ -305,6 +334,21 @@ def publish_validated_dataset(config: DownloadConfig, dataframe: pd.DataFrame, s
             "acquisition_duration_seconds": time.perf_counter() - started,
             "acquired_at_utc": datetime.now(timezone.utc).isoformat(),
             "csv_path": str(output),
+            "authorization_scope": matching_scope(config),
+            "provenance": {
+                "method": "GET", "endpoint": BINANCE_FUTURES_KLINES_URL,
+                "params": {"symbol": config.symbol, "interval": config.interval,
+                           "startTime": start, "endTime": end - 1, "limit": MAX_LIMIT},
+                "pagination": "startTime advanced to last open time + interval",
+                "timestamp_semantics": "candle open time, UTC",
+            },
+            "units": VOLUME_UNITS,
+            "integrity_checks": {
+                "expected_rows": (end - start) // 60_000, "unique_rows": int(serialized["timestamp"].nunique()),
+                "spacing_seconds": 60, "no_duplicates": True, "no_missing": True, "no_out_of_range": True,
+                "positive_ohlc": True, "finite_nonnegative_volumes": True,
+                "taker_buy_base_within_volume": True, "gap_filling": "none",
+            },
         }
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
                                          dir=output.parent, prefix=".ohlcv-", suffix=".tmp", delete=False) as handle:
@@ -338,7 +382,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Show plan only, without network or writes")
-    mode.add_argument("--execute-authorized-download", action="store_true", help="Execute only the exact TASK-019B scope on the operator computer")
+    mode.add_argument("--execute-authorized-download", action="store_true", help="Execute only an exact authorized scope (TASK-019B or TASK-032B) on the operator computer")
     return parser
 
 

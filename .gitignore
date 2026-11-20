@@ -16,4 +16,5 @@ data/*.csv
 
 # Local acquisition metadata accompanies gitignored market data.
 data/binance_usdm_BTCUSDT_1m_20241001_20241008.csv.manifest.json
+data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv.manifest.json
 .venv-local/

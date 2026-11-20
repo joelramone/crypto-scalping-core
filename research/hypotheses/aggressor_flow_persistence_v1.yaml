@@ -1,0 +1,133 @@
+hypothesis_id: HYP-AGGRESSOR-FLOW-PERSISTENCE-001
+protocol_file: research/hypotheses/aggressor_flow_persistence_v1.md
+status: BASELINE_REJECT
+result_file: research/backtests/aggressor_flow_persistence_v1_dataset_a.json
+tested_at: "2026-11-20"
+purpose: discovery_baseline
+origin: research/reports/scalping_new_edge_discovery_v1.md#candidate-a
+registered_at: "2026-11-20"
+outcomes_inspected_before_registration: false
+symbol: BTCUSDT
+product: binance_usdm_perpetual
+source_timeframe: 1m
+signal_timeframe: 5m
+legs: [LONG, SHORT]
+scope_limitation: kline_proxy_only_no_prints_no_l2
+
+dataset_boundaries:
+  dataset_a:
+    role: discovery
+    path: data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv
+    period_start: "2023-01-01T00:00:00Z"
+    period_end: "2023-04-15T00:00:00Z"
+    period_end_inclusive: false
+    authorization_scope: TASK-032B
+    expected_rows_1m: 149760
+    sha256: 2a49857054bf14663fd2a91a6980254883be6d3d84e5147ff5750155a40607af
+    verify_sha256_before_run: true
+    permitted_runs_per_leg: 1
+  prohibited:
+    - period_start: "2025-01-01"
+      period_end: "2025-12-31"
+      reason: discovery_used_elsewhere
+    - strictly_after_or_equal: "2026-01-01"
+      reason: used_or_reserved_elsewhere
+    - period_start: "2024-10-01"
+      period_end: "2024-10-08"
+      reason: TASK-019B_technical_validation_only
+    - strictly_after_or_equal: "2023-04-15T00:00:00Z"
+      reason: not_inspected_reserved_for_future_confirmation_authorization
+
+features:
+  resample: {rule: 5m, label: open_time, closed: left, causal: true}
+  aggregation:
+    open: first
+    high: max
+    low: min
+    close: last
+    volume: sum
+    taker_buy: sum_of_taker_buy_base_volume
+  imbalance:
+    expression: (2 * taker_buy[t] - volume[t]) / volume[t]
+    range: [-1, 1]
+    zero_volume: undefined_no_signal
+
+signal:
+  constants: {THETA: 0.10, K: 3}
+  long_state: imb[t] >= THETA AND imb[t-1] >= THETA AND imb[t-2] >= THETA
+  short_state: imb[t] <= -THETA AND imb[t-1] <= -THETA AND imb[t-2] <= -THETA
+  long_signal: long_state[t] AND NOT long_state[t-1]
+  short_signal: short_state[t] AND NOT short_state[t-1]
+  onset_only: true
+  evaluation: after_completed_candle_t
+  warmup_candles: 3
+  future_information_allowed: false
+  prohibited_components:
+    - breakout_condition
+    - EMA
+    - RSI
+    - Bollinger_Bands
+    - ATR_gate
+    - volatility_filter
+    - volume_level_filter
+    - trade_count_filter
+    - time_of_day_filter
+    - regime_filter
+    - machine_learning
+
+execution:
+  simulator: official_research_simulator
+  execution_mode: next_bar_open
+  take_profit_pct: 0.006
+  stop_loss_pct: 0.004
+  max_holding_candles: 12
+  generate_exits: false
+  fee_rate_per_side: 0.0004
+  fixed_notional_usdt: 100
+  one_position_at_a_time: true
+  slippage_modeled: false
+
+diagnostic_requirements:
+  per_leg: true
+  implementation: permanent_TradeDiagnostics
+  blocks: [gross_net, payoff, exits, overlap, monthly]
+  same_fields_as: HYP-REGIME-TRANSITION-001
+  descriptive_extras:
+    contemporaneous_return: signed open[t-2] -> close[t]
+    post_observation_return: signed open[t+1] -> close[t+12]
+    post_observation_stats: [mean, median, fraction_positive]
+    imbalance_share_abs_ge_theta: reported_only_not_for_tuning
+
+verdict_rules:
+  per_leg:
+    evaluation_order: [INSUFFICIENT_SAMPLE, BASELINE_REJECT, BASELINE_CANDIDATE]
+    insufficient_sample: completed_trades < 100
+    baseline_reject_any:
+      - net_profit_factor <= 1
+      - net_expectancy <= 0
+      - net_pnl <= 0
+      - gross_expectancy <= 0
+      - positive_pnl_concentration_top_2_months > 0.80
+    baseline_candidate_all:
+      - completed_trades >= 100
+      - gross_expectancy > 0
+      - net_profit_factor > 1
+      - net_expectancy > 0
+      - net_pnl > 0
+      - positive_pnl_concentration_top_2_months <= 0.80
+  hypothesis_level:
+    BASELINE_CANDIDATE: any_leg_candidate AND opposite_leg_gross_expectancy > 0
+    INSUFFICIENT_SAMPLE: no_leg_reaches_100_completed_trades
+    BASELINE_REJECT: otherwise
+  report_both_legs: required
+
+anti_tuning_constraints:
+  after_observing_dataset_a:
+    changing_THETA_or_K: prohibited
+    changing_timeframe_imbalance_or_onset_rule: prohibited
+    changing_TP_SL_holding_execution_or_fees: prohibited
+    adding_filters: prohibited
+    changing_or_trimming_period: prohibited
+    cosmetic_rerun_under_new_name: prohibited
+  termination_rule: if_hypothesis_level_BASELINE_REJECT_this_hypothesis_ends
+  candidate_next_step: request_authorization_for_untouched_confirmation_dataset_same_frozen_rules
