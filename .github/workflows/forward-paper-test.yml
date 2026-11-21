@@ -1,0 +1,77 @@
+name: Forward paper test (daily trend BTC)
+
+# Monthly update of HYP-DAILY-TREND-BTC-FWD-001
+# (research/hypotheses/daily_trend_btc_forward_v1.md).
+# Paper only: downloads public Binance daily klines and commits the forward record.
+# Never changes the rule, the protocol or the criteria.
+
+on:
+  schedule:
+    - cron: "0 6 2 * *"   # 06:00 UTC on the 2nd of each month
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: forward-paper-test
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -q pandas==2.2.3 numpy requests pydantic pytest
+
+      - name: Run tests
+        run: python -m pytest -q -p no:cacheprovider app/research/test_daily_trend_forward.py
+
+      - name: Update forward record
+        run: python -m app.research.daily_trend_forward
+
+      - name: Verify only the forward record changed
+        run: |
+          changed=$(git status --porcelain | awk '{print $2}' | grep -v '^research/forward/daily_trend_btc_fwd_v1/' || true)
+          if [ -n "$changed" ]; then
+            echo "Unexpected changes: $changed"
+            exit 1
+          fi
+
+      - name: Commit and push
+        run: |
+          if git diff --quiet -- research/forward/daily_trend_btc_fwd_v1; then
+            echo "No change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/forward/daily_trend_btc_fwd_v1/status.json research/forward/daily_trend_btc_fwd_v1/report.md
+          git commit -m "Update daily trend BTC forward paper test ($(date -u +%Y-%m-%d))"
+          git push
+
+      - name: Open issue on verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verdict=$(python -c "import json;print(json.load(open('research/forward/daily_trend_btc_fwd_v1/status.json'))['verdict'])")
+          if [ "$verdict" != "FORWARD_IN_PROGRESS" ]; then
+            gh issue create --title "Forward paper test verdict: $verdict" \
+              --body-file research/forward/daily_trend_btc_fwd_v1/report.md
+          fi
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Forward paper test update failed ($(date -u +%Y-%m-%d))" \
+            --body "The monthly forward paper test workflow failed. Nothing was committed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
