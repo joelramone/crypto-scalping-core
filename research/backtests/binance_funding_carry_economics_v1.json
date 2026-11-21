@@ -1,0 +1,442 @@
+{
+  "assumptions": {
+    "capital_per_notional": {
+      "1x": 2.0,
+      "2x": 1.5,
+      "3x": 1.3333333333333333
+    },
+    "fee_scenarios": {
+      "maker_all_fills_bnb_discount": {
+        "perp": 0.00018,
+        "spot": 0.00075
+      },
+      "taker_all_fills": {
+        "perp": 0.0005,
+        "spot": 0.001
+      }
+    },
+    "leverages": [
+      1,
+      2,
+      3
+    ],
+    "not_modeled": [
+      "basis PnL at entry/exit",
+      "slippage and spread",
+      "margin top-ups",
+      "liquidation of the short leg",
+      "interest on idle collateral",
+      "taxes",
+      "ARS/USDT conversion costs"
+    ]
+  },
+  "by_year": {
+    "2019": {
+      "annualized_funding": 0.07481924423076926,
+      "best_30d_sum": 0.013408030000000001,
+      "fraction_negative": 0.1834319526627219,
+      "fraction_positive": 0.8165680473372781,
+      "longest_negative_streak_settlements": 9,
+      "mean_rate": 6.832807692307694e-05,
+      "median_rate": 0.0001,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.06879350458579883,
+          "annualized_on_capital": {
+            "1x": 0.034396752292899416,
+            "2x": 0.045862336390532554,
+            "3x": 0.051595128439349124
+          },
+          "net_on_notional": 0.021234890000000006,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.06510030931952665,
+          "annualized_on_capital": {
+            "1x": 0.032550154659763325,
+            "2x": 0.04340020621301777,
+            "3x": 0.04882523198964499
+          },
+          "net_on_notional": 0.020094890000000008,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 338,
+      "sum_funding": 0.023094890000000007,
+      "worst_30d_sum": 0.00033823000000000013
+    },
+    "2020": {
+      "annualized_funding": 0.1719261594262295,
+      "best_30d_sum": 0.04894522,
+      "fraction_negative": 0.1429872495446266,
+      "fraction_positive": 0.8570127504553734,
+      "longest_negative_streak_settlements": 24,
+      "mean_rate": 0.0001570101912568306,
+      "median_rate": 0.0001,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.1700712413934426,
+          "annualized_on_capital": {
+            "1x": 0.0850356206967213,
+            "2x": 0.1133808275956284,
+            "3x": 0.12755343104508196
+          },
+          "net_on_notional": 0.17053718999999998,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.16893435614754093,
+          "annualized_on_capital": {
+            "1x": 0.08446717807377047,
+            "2x": 0.11262290409836062,
+            "3x": 0.1267007671106557
+          },
+          "net_on_notional": 0.16939718999999998,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1098,
+      "sum_funding": 0.17239718999999998,
+      "worst_30d_sum": -0.01311998
+    },
+    "2021": {
+      "annualized_funding": 0.30608423,
+      "best_30d_sum": 0.07709957,
+      "fraction_negative": 0.0730593607305936,
+      "fraction_positive": 0.9269406392694064,
+      "longest_negative_streak_settlements": 9,
+      "mean_rate": 0.0002795289771689498,
+      "median_rate": 0.0001,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.30422423000000004,
+          "annualized_on_capital": {
+            "1x": 0.15211211500000002,
+            "2x": 0.20281615333333336,
+            "3x": 0.22816817250000004
+          },
+          "net_on_notional": 0.30422423000000004,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.30308423,
+          "annualized_on_capital": {
+            "1x": 0.151542115,
+            "2x": 0.20205615333333335,
+            "3x": 0.22731317250000002
+          },
+          "net_on_notional": 0.30308423,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1095,
+      "sum_funding": 0.30608423,
+      "worst_30d_sum": -0.0036063700000000002
+    },
+    "2022": {
+      "annualized_funding": 0.04164925,
+      "best_30d_sum": 0.006658440000000001,
+      "fraction_negative": 0.22100456621004566,
+      "fraction_positive": 0.7789954337899543,
+      "longest_negative_streak_settlements": 10,
+      "mean_rate": 3.803584474885845e-05,
+      "median_rate": 5.135e-05,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.03978925,
+          "annualized_on_capital": {
+            "1x": 0.019894625,
+            "2x": 0.026526166666666667,
+            "3x": 0.0298419375
+          },
+          "net_on_notional": 0.03978925,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.038649249999999996,
+          "annualized_on_capital": {
+            "1x": 0.019324624999999998,
+            "2x": 0.025766166666666663,
+            "3x": 0.028986937499999997
+          },
+          "net_on_notional": 0.038649249999999996,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1095,
+      "sum_funding": 0.04164925,
+      "worst_30d_sum": -0.0022564600000000005
+    },
+    "2023": {
+      "annualized_funding": 0.07865712000000001,
+      "best_30d_sum": 0.01657172,
+      "fraction_negative": 0.10136986301369863,
+      "fraction_positive": 0.8986301369863013,
+      "longest_negative_streak_settlements": 7,
+      "mean_rate": 7.183298630136987e-05,
+      "median_rate": 8.265e-05,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.07679712000000001,
+          "annualized_on_capital": {
+            "1x": 0.038398560000000005,
+            "2x": 0.05119808000000001,
+            "3x": 0.05759784000000001
+          },
+          "net_on_notional": 0.07679712000000001,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.07565712000000001,
+          "annualized_on_capital": {
+            "1x": 0.037828560000000004,
+            "2x": 0.05043808,
+            "3x": 0.05674284000000001
+          },
+          "net_on_notional": 0.07565712000000001,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1095,
+      "sum_funding": 0.07865712000000001,
+      "worst_30d_sum": 0.00059549
+    },
+    "2024": {
+      "annualized_funding": 0.11924213920765027,
+      "best_30d_sum": 0.03219151,
+      "fraction_negative": 0.08378870673952642,
+      "fraction_positive": 0.9162112932604736,
+      "longest_negative_streak_settlements": 18,
+      "mean_rate": 0.00010889693078324227,
+      "median_rate": 0.0001,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.11738722117486339,
+          "annualized_on_capital": {
+            "1x": 0.058693610587431694,
+            "2x": 0.07825814744990893,
+            "3x": 0.08804041588114754
+          },
+          "net_on_notional": 0.11770883000000001,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.11625033592896175,
+          "annualized_on_capital": {
+            "1x": 0.058125167964480876,
+            "2x": 0.07750022395264117,
+            "3x": 0.08718775194672132
+          },
+          "net_on_notional": 0.11656883000000001,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1098,
+      "sum_funding": 0.11956883000000001,
+      "worst_30d_sum": -0.00074075
+    },
+    "2025": {
+      "annualized_funding": 0.051264279999999995,
+      "best_30d_sum": 0.00768276,
+      "fraction_negative": 0.12876712328767123,
+      "fraction_positive": 0.8712328767123287,
+      "longest_negative_streak_settlements": 10,
+      "mean_rate": 4.681669406392694e-05,
+      "median_rate": 4.826e-05,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.049404279999999995,
+          "annualized_on_capital": {
+            "1x": 0.024702139999999997,
+            "2x": 0.032936186666666666,
+            "3x": 0.037053209999999996
+          },
+          "net_on_notional": 0.049404279999999995,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.04826427999999999,
+          "annualized_on_capital": {
+            "1x": 0.024132139999999996,
+            "2x": 0.03217618666666666,
+            "3x": 0.036198209999999995
+          },
+          "net_on_notional": 0.04826427999999999,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1095,
+      "sum_funding": 0.051264279999999995,
+      "worst_30d_sum": 0.0011326099999999998
+    },
+    "2026": {
+      "annualized_funding": 0.031225461842105267,
+      "best_30d_sum": 0.00628756,
+      "fraction_negative": 0.25,
+      "fraction_positive": 0.75,
+      "longest_negative_streak_settlements": 14,
+      "mean_rate": 2.8516403508771934e-05,
+      "median_rate": 3.4595e-05,
+      "net_if_held_whole_year": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.02899223815789474,
+          "annualized_on_capital": {
+            "1x": 0.01449611907894737,
+            "2x": 0.019328158771929827,
+            "3x": 0.021744178618421057
+          },
+          "net_on_notional": 0.024146960000000002,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.02762348815789474,
+          "annualized_on_capital": {
+            "1x": 0.01381174407894737,
+            "2x": 0.018415658771929827,
+            "3x": 0.020717616118421055
+          },
+          "net_on_notional": 0.023006960000000003,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 912,
+      "sum_funding": 0.026006960000000003,
+      "worst_30d_sum": -0.00296775
+    }
+  },
+  "dataset": {
+    "first": "2019-09-10 08:00:00+00:00",
+    "last": "2026-10-31 16:00:00+00:00",
+    "path": "data/binance_usdm_BTCUSDT_funding_20190901_20261101.csv",
+    "settlements": 7826,
+    "sha256": "1b1779e108fe23ab5c56e74aa6c24855c8d4400fa56fb4efbe20aeeecb167e8b",
+    "years": 7.146118721461187
+  },
+  "recent": {
+    "last_365d": {
+      "annualized_funding": 0.034787830291970814,
+      "best_30d_sum": 0.00628756,
+      "breakeven_days_at_this_rate": {
+        "maker_all_fills_bnb_discount": 19.51544532389803,
+        "taker_all_fills": 31.476524715964562
+      },
+      "fraction_negative": 0.2271897810218978,
+      "fraction_positive": 0.7728102189781022,
+      "longest_negative_streak_settlements": 14,
+      "mean_rate": 3.176970802919709e-05,
+      "median_rate": 3.7065e-05,
+      "net_if_held": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.032959600000000006,
+          "annualized_on_capital": {
+            "1x": 0.016479800000000003,
+            "2x": 0.02197306666666667,
+            "3x": 0.024719700000000004
+          },
+          "net_on_notional": 0.032959600000000006,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.0318196,
+          "annualized_on_capital": {
+            "1x": 0.0159098,
+            "2x": 0.02121306666666667,
+            "3x": 0.023864700000000003
+          },
+          "net_on_notional": 0.0318196,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 1096,
+      "sum_funding": 0.034819600000000006,
+      "worst_30d_sum": -0.00296775
+    },
+    "last_90d": {
+      "annualized_funding": 0.05856846777777779,
+      "best_30d_sum": 0.00628756,
+      "breakeven_days_at_this_rate": {
+        "maker_all_fills_bnb_discount": 11.591561564763866,
+        "taker_all_fills": 18.69606703994172
+      },
+      "fraction_negative": 0.07407407407407407,
+      "fraction_positive": 0.9259259259259259,
+      "longest_negative_streak_settlements": 3,
+      "mean_rate": 5.348718518518519e-05,
+      "median_rate": 5.8075e-05,
+      "net_if_held": {
+        "maker_all_fills_bnb_discount": {
+          "annualized_net_on_notional": 0.051025134444444446,
+          "annualized_on_capital": {
+            "1x": 0.025512567222222223,
+            "2x": 0.034016756296296295,
+            "3x": 0.03826885083333334
+          },
+          "net_on_notional": 0.01258154,
+          "round_trip_cost": 0.00186
+        },
+        "taker_all_fills": {
+          "annualized_net_on_notional": 0.04640180111111111,
+          "annualized_on_capital": {
+            "1x": 0.023200900555555556,
+            "2x": 0.030934534074074076,
+            "3x": 0.034801350833333335
+          },
+          "net_on_notional": 0.01144154,
+          "round_trip_cost": 0.003
+        }
+      },
+      "settlements": 270,
+      "sum_funding": 0.014441540000000001,
+      "worst_30d_sum": 0.00268352
+    }
+  },
+  "rolling_365d_funding_sum": {
+    "best_window_end": "2021-06-01 16:00:00.010000+00:00",
+    "fraction_below_round_trip_cost": {
+      "maker_all_fills_bnb_discount": 0.0,
+      "taker_all_fills": 0.0
+    },
+    "fraction_below_zero": 0.0,
+    "max": 0.335639,
+    "median": 0.085979175,
+    "min": 0.03208693,
+    "p10": 0.041225590000000006,
+    "p90": 0.30118926,
+    "windows": 6732,
+    "worst_window_end": "2026-10-11 08:00:00+00:00"
+  },
+  "whole_period": {
+    "annualized_funding": 0.11455423092895478,
+    "best_30d_sum": 0.07709956999999999,
+    "fraction_negative": 0.14221824686940965,
+    "fraction_positive": 0.8577817531305904,
+    "longest_negative_streak_settlements": 24,
+    "mean_rate": 0.00010461573600817788,
+    "median_rate": 9.358000000000001e-05,
+    "net_if_held": {
+      "maker_all_fills_bnb_discount": {
+        "annualized_net_on_notional": 0.11430858929712462,
+        "annualized_on_capital": {
+          "1x": 0.05715429464856231,
+          "2x": 0.07620572619808308,
+          "3x": 0.08573144197284346
+        },
+        "net_on_notional": 0.8168627500000001,
+        "round_trip_cost": 0.00186
+      },
+      "taker_all_fills": {
+        "annualized_net_on_notional": 0.11414906214057509,
+        "annualized_on_capital": {
+          "1x": 0.057074531070287544,
+          "2x": 0.07609937476038339,
+          "3x": 0.08561179660543132
+        },
+        "net_on_notional": 0.81572275,
+        "round_trip_cost": 0.003
+      }
+    },
+    "settlements": 7826,
+    "sum_funding": 0.81872275,
+    "worst_30d_sum": -0.01311998
+  }
+}
