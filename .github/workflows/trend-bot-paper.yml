@@ -42,9 +42,9 @@ jobs:
 
       - name: Commit paper state
         run: |
-          changed=$(git status --porcelain | awk '{print $2}' | grep -v '^research/paper/trend_bot_v1/' || true)
+          changed=$(git status --porcelain -uall | awk '{print $2}' | grep -v '^research/paper/trend_bot_v1/' || true)
           if [ -n "$changed" ]; then echo "Unexpected changes: $changed"; exit 1; fi
-          if [ -z "$(git status --porcelain research/paper/trend_bot_v1)" ]; then echo "No change"; exit 0; fi
+          if [ -z "$(git status --porcelain -uall research/paper/trend_bot_v1)" ]; then echo "No change"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/paper/trend_bot_v1
