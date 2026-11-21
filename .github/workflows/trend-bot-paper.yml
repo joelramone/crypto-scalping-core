@@ -1,0 +1,61 @@
+name: Trend bot (paper)
+
+# Daily paper run of app/trend_bot (simulated fills, public data only, no API keys).
+# Commits the paper state and ledger under research/paper/trend_bot_v1/.
+
+on:
+  schedule:
+    - cron: "10 0 * * *"   # 00:10 UTC, after the daily close
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: trend-bot-paper
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -q pandas==2.2.3 numpy requests pydantic pytest
+
+      - name: Run tests
+        run: python -m pytest -q -p no:cacheprovider app/trend_bot/test_bot.py
+
+      - name: Paper run
+        env:
+          TREND_BOT_MODE: paper
+          TREND_BOT_CAPITAL_USDT: "1000"
+          TREND_BOT_STATE_DIR: research/paper/trend_bot_v1
+        run: python -m app.trend_bot.bot
+
+      - name: Commit paper state
+        run: |
+          changed=$(git status --porcelain | awk '{print $2}' | grep -v '^research/paper/trend_bot_v1/' || true)
+          if [ -n "$changed" ]; then echo "Unexpected changes: $changed"; exit 1; fi
+          if [ -z "$(git status --porcelain research/paper/trend_bot_v1)" ]; then echo "No change"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/paper/trend_bot_v1
+          git commit -m "Trend bot paper run ($(date -u +%Y-%m-%d))"
+          git pull --rebase -q
+          git push
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Trend bot paper run failed ($(date -u +%Y-%m-%d))" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
