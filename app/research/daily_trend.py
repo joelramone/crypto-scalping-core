@@ -72,28 +72,29 @@ def daily_returns(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]
     return strategy, buy_hold, held
 
 
-def metrics(returns: pd.Series) -> dict[str, Any]:
+def metrics(returns: pd.Series, days_per_year: int = DAYS_PER_YEAR) -> dict[str, Any]:
     equity = (1.0 + returns).cumprod()
     n = len(returns)
     peak = np.maximum.accumulate(np.r_[1.0, equity.to_numpy()])
     drawdown = np.r_[1.0, equity.to_numpy()] / peak - 1.0
     std = returns.std(ddof=1)
-    cagr = equity.iloc[-1] ** (DAYS_PER_YEAR / n) - 1.0
+    cagr = equity.iloc[-1] ** (days_per_year / n) - 1.0
     max_dd = float(drawdown.min())
     return {
         "days": n, "start": str(returns.index[0]), "end": str(returns.index[-1]),
         "total_return": float(equity.iloc[-1] - 1.0), "cagr": float(cagr),
-        "annualized_volatility": float(std * math.sqrt(DAYS_PER_YEAR)),
-        "sharpe": float(returns.mean() / std * math.sqrt(DAYS_PER_YEAR)) if std > 0 else None,
+        "annualized_volatility": float(std * math.sqrt(days_per_year)),
+        "sharpe": float(returns.mean() / std * math.sqrt(days_per_year)) if std > 0 else None,
         "max_drawdown": max_dd, "calmar": float(cagr / abs(max_dd)) if max_dd < 0 else None,
     }
 
 
-def evaluate(frame: pd.DataFrame) -> dict[str, Any]:
+def evaluate(frame: pd.DataFrame, days_per_year: int = DAYS_PER_YEAR) -> dict[str, Any]:
     strategy, buy_hold, held = daily_returns(frame)
     mid = len(strategy) // 2
     windows = {"full": slice(None), "first_half": slice(0, mid), "second_half": slice(mid, None)}
-    result: dict[str, Any] = {name: {"strategy": metrics(strategy.iloc[s]), "buy_and_hold": metrics(buy_hold.iloc[s])}
+    result: dict[str, Any] = {name: {"strategy": metrics(strategy.iloc[s], days_per_year),
+                                     "buy_and_hold": metrics(buy_hold.iloc[s], days_per_year)}
                               for name, s in windows.items()}
     changes = held.diff().fillna(held.iloc[0]).abs()
     result["activity"] = {"time_in_market": float(held.mean()), "position_changes": int((changes > 0).sum()),
