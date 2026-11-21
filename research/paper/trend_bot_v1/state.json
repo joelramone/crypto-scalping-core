@@ -1,0 +1,14 @@
+{
+  "initial_capital_usdt": 1000.0,
+  "last_candle_date": "2026-11-20",
+  "last_target": 0.0,
+  "mode": "paper",
+  "sleeve": {
+    "btc": 0.0,
+    "usdt": 1000.0
+  },
+  "started_at_utc": "2026-11-21T16:42:48+00:00",
+  "symbol": "BTCUSDT",
+  "total_fees_usdt": 0.0,
+  "trades": 0
+}
