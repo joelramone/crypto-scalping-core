@@ -1,0 +1,824 @@
+{
+  "asset_checks": {
+    "EFA": {
+      "drawdown_within_60pct_of_buy_hold": true,
+      "passes": true,
+      "sharpe_beats_buy_hold": true
+    },
+    "GLD": {
+      "drawdown_within_60pct_of_buy_hold": false,
+      "passes": false,
+      "sharpe_beats_buy_hold": false
+    },
+    "SPY": {
+      "drawdown_within_60pct_of_buy_hold": true,
+      "passes": true,
+      "sharpe_beats_buy_hold": true
+    },
+    "TLT": {
+      "drawdown_within_60pct_of_buy_hold": false,
+      "passes": false,
+      "sharpe_beats_buy_hold": false
+    }
+  },
+  "datasets": {
+    "EFA": {
+      "path": "data/yahoo_EFA_1d_20050101_20261101.csv",
+      "sha256": "88f2efbb87fd8059d680b173cec94bf2d09a4d3115b9f1030d75ef877b806976"
+    },
+    "GLD": {
+      "path": "data/yahoo_GLD_1d_20050101_20261101.csv",
+      "sha256": "c5be9eff7f25d4b46bd259bc04924eb744a64a05cb9aa414557523b1b98e12b5"
+    },
+    "SPY": {
+      "path": "data/yahoo_SPY_1d_20050101_20261101.csv",
+      "sha256": "856a0ddb4d690e6b39a164b01a7bdd5c7db067ce0b09aef3d1d5ebabb4123f27"
+    },
+    "TLT": {
+      "path": "data/yahoo_TLT_1d_20050101_20261101.csv",
+      "sha256": "4353c055643124b15b12e86b9fc9311a63ab2d99d7bf22a81b718213a53aba4e"
+    }
+  },
+  "frozen": {
+    "annualization_days": 252,
+    "cash_yield": 0.0,
+    "drawdown_ratio_limit": 0.6,
+    "execution": "next_open",
+    "fee_rate": 0.001,
+    "min_passing_assets": 3,
+    "sma_lengths": [
+      50,
+      100,
+      200
+    ]
+  },
+  "hypothesis_id": "HYP-DAILY-TREND-XASSET-001",
+  "passing_assets": 2,
+  "results": {
+    "EFA": {
+      "activity": {
+        "position_changes": 675,
+        "time_in_market": 0.6719586719586719,
+        "total_fees_fraction_traded": 0.25233333333333335
+      },
+      "calendar_years": {
+        "2005": {
+          "average_position": 0.9102564102564101,
+          "buy_and_hold": 0.10401535862621647,
+          "strategy": 0.08813277565562361
+        },
+        "2006": {
+          "average_position": 0.8950863213811421,
+          "buy_and_hold": 0.24829751887704998,
+          "strategy": 0.19693914107560406
+        },
+        "2007": {
+          "average_position": 0.8114209827357238,
+          "buy_and_hold": 0.09585802652313724,
+          "strategy": -0.019926198793923544
+        },
+        "2008": {
+          "average_position": 0.16600790513833993,
+          "buy_and_hold": -0.41779070989015943,
+          "strategy": 0.0004977005163611103
+        },
+        "2009": {
+          "average_position": 0.6997354497354497,
+          "buy_and_hold": 0.3039502018392619,
+          "strategy": 0.3016677531272869
+        },
+        "2010": {
+          "average_position": 0.6309523809523809,
+          "buy_and_hold": 0.06693810762236208,
+          "strategy": 0.019561590371699245
+        },
+        "2011": {
+          "average_position": 0.4933862433862434,
+          "buy_and_hold": -0.110363698306992,
+          "strategy": -0.15909015347065447
+        },
+        "2012": {
+          "average_position": 0.704,
+          "buy_and_hold": 0.18044680402644087,
+          "strategy": 0.11385816378125213
+        },
+        "2013": {
+          "average_position": 0.9074074074074074,
+          "buy_and_hold": 0.18150438834624327,
+          "strategy": 0.10537956844526541
+        },
+        "2014": {
+          "average_position": 0.5912698412698413,
+          "buy_and_hold": -0.046049315655413925,
+          "strategy": -0.03993360571224713
+        },
+        "2015": {
+          "average_position": 0.4828042328042328,
+          "buy_and_hold": -0.028458027552506815,
+          "strategy": -0.043174363366897284
+        },
+        "2016": {
+          "average_position": 0.5621693121693122,
+          "buy_and_hold": 0.03342846351022133,
+          "strategy": -0.1350938046336818
+        },
+        "2017": {
+          "average_position": 0.9986719787516601,
+          "buy_and_hold": 0.24990474274436325,
+          "strategy": 0.24914182516549088
+        },
+        "2018": {
+          "average_position": 0.38114209827357237,
+          "buy_and_hold": -0.1522987960582448,
+          "strategy": -0.1112674407900367
+        },
+        "2019": {
+          "average_position": 0.7671957671957671,
+          "buy_and_hold": 0.2461097060229669,
+          "strategy": 0.08816423327573308
+        },
+        "2020": {
+          "average_position": 0.6798418972332015,
+          "buy_and_hold": 0.08888548523878548,
+          "strategy": 0.10531529675676787
+        },
+        "2021": {
+          "average_position": 0.8452380952380952,
+          "buy_and_hold": 0.09942569873397011,
+          "strategy": 0.016262823041608643
+        },
+        "2022": {
+          "average_position": 0.22310756972111553,
+          "buy_and_hold": -0.13820251522074012,
+          "strategy": 0.002203181322148806
+        },
+        "2023": {
+          "average_position": 0.7253333333333333,
+          "buy_and_hold": 0.1564632724359145,
+          "strategy": 0.08894102583096819
+        },
+        "2024": {
+          "average_position": 0.783068783068783,
+          "buy_and_hold": 0.04736555065970993,
+          "strategy": 0.024057589188587247
+        },
+        "2025": {
+          "average_position": 0.9013333333333332,
+          "buy_and_hold": 0.3275965548246682,
+          "strategy": 0.1340232475126104
+        },
+        "2026": {
+          "average_position": 0.8477564102564104,
+          "buy_and_hold": 0.0840836018181268,
+          "strategy": 0.05186747235765199
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.2279529311033528,
+          "cagr": 0.03578774262312234,
+          "calmar": 0.05873258937743761,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.6093336425734086,
+          "sharpe": 0.26865744372416844,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.4463801690197322
+        },
+        "strategy": {
+          "annualized_volatility": 0.11809208306090346,
+          "cagr": 0.04728060873092166,
+          "calmar": 0.2131150452184048,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.22185486098584684,
+          "sharpe": 0.4503728537498959,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.6239869636453703
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.20006921808763967,
+          "cagr": 0.06078550070835642,
+          "calmar": 0.09975733565545476,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.6093336425734086,
+          "sharpe": 0.39556974133117545,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 2.4520523858851373
+        },
+        "strategy": {
+          "annualized_volatility": 0.11329163941768097,
+          "cagr": 0.04504665082337023,
+          "calmar": 0.18774847440990539,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.23993084878560067,
+          "sharpe": 0.44577087218017447,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 1.5221638561795512
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.1676602169515234,
+          "cagr": 0.08637676489490254,
+          "calmar": 0.2540148646202376,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.34004610330202234,
+          "sharpe": 0.5787576966191518,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 1.386683985182628
+        },
+        "strategy": {
+          "annualized_volatility": 0.10830266108708339,
+          "cagr": 0.04281829975678764,
+          "calmar": 0.24503406085196508,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.1747442768075247,
+          "sharpe": 0.4415382873534685,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 0.5530690286565174
+        }
+      }
+    },
+    "GLD": {
+      "activity": {
+        "position_changes": 685,
+        "time_in_market": 0.6257796257796258,
+        "total_fees_fraction_traded": 0.262
+      },
+      "calendar_years": {
+        "2005": {
+          "average_position": 0.9743589743589743,
+          "buy_and_hold": 0.1093025836510797,
+          "strategy": 0.09846442688086765
+        },
+        "2006": {
+          "average_position": 0.746347941567065,
+          "buy_and_hold": 0.2159112778323693,
+          "strategy": 0.083979616648717
+        },
+        "2007": {
+          "average_position": 0.8459495351925631,
+          "buy_and_hold": 0.3142496878284182,
+          "strategy": 0.16708422440946902
+        },
+        "2008": {
+          "average_position": 0.5401844532279315,
+          "buy_and_hold": 0.028362886738003024,
+          "strategy": -0.11182134825263867
+        },
+        "2009": {
+          "average_position": 0.8994708994708995,
+          "buy_and_hold": 0.27801698248346796,
+          "strategy": 0.16915640129765586
+        },
+        "2010": {
+          "average_position": 0.8809523809523809,
+          "buy_and_hold": 0.2627025910971743,
+          "strategy": 0.15663122160313336
+        },
+        "2011": {
+          "average_position": 0.8174603174603174,
+          "buy_and_hold": 0.11603083976599016,
+          "strategy": 0.04478777579037918
+        },
+        "2012": {
+          "average_position": 0.4586666666666666,
+          "buy_and_hold": 0.05640999803694369,
+          "strategy": -0.04652603455386817
+        },
+        "2013": {
+          "average_position": 0.09920634920634919,
+          "buy_and_hold": -0.2786715007474466,
+          "strategy": -0.07686154316161875
+        },
+        "2014": {
+          "average_position": 0.3677248677248677,
+          "buy_and_hold": -0.04612908019442752,
+          "strategy": -0.0715976641753785
+        },
+        "2015": {
+          "average_position": 0.205026455026455,
+          "buy_and_hold": -0.08320740321896758,
+          "strategy": -0.10390331415135967
+        },
+        "2016": {
+          "average_position": 0.6693121693121694,
+          "buy_and_hold": 0.0629303371085761,
+          "strategy": 0.0984916727897871
+        },
+        "2017": {
+          "average_position": 0.6095617529880478,
+          "buy_and_hold": 0.13720124556370172,
+          "strategy": -0.03846092116084843
+        },
+        "2018": {
+          "average_position": 0.4369189907038512,
+          "buy_and_hold": -0.026552262881044397,
+          "strategy": 0.006862376115461144
+        },
+        "2019": {
+          "average_position": 0.7883597883597885,
+          "buy_and_hold": 0.18549651767017372,
+          "strategy": 0.12725395904614345
+        },
+        "2020": {
+          "average_position": 0.8379446640316206,
+          "buy_and_hold": 0.26491033260574914,
+          "strategy": 0.11095620306229836
+        },
+        "2021": {
+          "average_position": 0.324074074074074,
+          "buy_and_hold": -0.07204484542730294,
+          "strategy": -0.15286586431200233
+        },
+        "2022": {
+          "average_position": 0.4435590969455512,
+          "buy_and_hold": 0.014568321123861194,
+          "strategy": 0.009939698880942593
+        },
+        "2023": {
+          "average_position": 0.7266666666666667,
+          "buy_and_hold": 0.11744101247387384,
+          "strategy": 0.06845797168648415
+        },
+        "2024": {
+          "average_position": 0.9113756613756612,
+          "buy_and_hold": 0.275699948319061,
+          "strategy": 0.20043021173296083
+        },
+        "2025": {
+          "average_position": 0.9733333333333333,
+          "buy_and_hold": 0.6445008316671006,
+          "strategy": 0.5997892284525839
+        },
+        "2026": {
+          "average_position": 0.4599358974358975,
+          "buy_and_hold": -0.10001987799047507,
+          "strategy": -0.004068492498824461
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.19931222596970016,
+          "cagr": 0.09198386602522213,
+          "calmar": 0.2029450324666041,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.4532452206750055,
+          "sharpe": 0.5413329593762898,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 1.5183650102121238
+        },
+        "strategy": {
+          "annualized_volatility": 0.14306693674383975,
+          "cagr": 0.0329821804317012,
+          "calmar": 0.07960699827514765,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.41431257485308104,
+          "sharpe": 0.2985622242477551,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.40578462243791846
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.18125870774102779,
+          "cagr": 0.1018832036282542,
+          "calmar": 0.22478605174594535,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.4532452206750055,
+          "sharpe": 0.626182772057364,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 6.667956117455616
+        },
+        "strategy": {
+          "annualized_volatility": 0.13636729713518086,
+          "cagr": 0.053271642660797536,
+          "calmar": 0.1285783871746788,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.41431257485308104,
+          "sharpe": 0.4490859354446939,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 1.9734372757520764
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.16124157167762748,
+          "cagr": 0.11186849107812336,
+          "calmar": 0.3849663441951892,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.29059291225053885,
+          "sharpe": 0.73867900696573,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 2.0448152219243756
+        },
+        "strategy": {
+          "annualized_volatility": 0.12934042688749367,
+          "cagr": 0.07395172832096297,
+          "calmar": 0.2890654421439671,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.2558304021832254,
+          "sharpe": 0.6166663266681071,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 1.1151442605735191
+        }
+      }
+    },
+    "SPY": {
+      "activity": {
+        "position_changes": 632,
+        "time_in_market": 0.7539217539217539,
+        "total_fees_fraction_traded": 0.23233333333333334
+      },
+      "calendar_years": {
+        "2005": {
+          "average_position": 0.814102564102564,
+          "buy_and_hold": 0.05705580206834915,
+          "strategy": 0.026057503064446763
+        },
+        "2006": {
+          "average_position": 0.8326693227091634,
+          "buy_and_hold": 0.15728525120814996,
+          "strategy": 0.11404700537924062
+        },
+        "2007": {
+          "average_position": 0.7410358565737052,
+          "buy_and_hold": 0.049096795707827656,
+          "strategy": -0.05425647645974285
+        },
+        "2008": {
+          "average_position": 0.1343873517786561,
+          "buy_and_hold": -0.3679326001861699,
+          "strategy": -0.08337830380198497
+        },
+        "2009": {
+          "average_position": 0.6997354497354497,
+          "buy_and_hold": 0.2712447489398562,
+          "strategy": 0.24001188817328178
+        },
+        "2010": {
+          "average_position": 0.6944444444444444,
+          "buy_and_hold": 0.1497500725550307,
+          "strategy": 0.03646706822973944
+        },
+        "2011": {
+          "average_position": 0.626984126984127,
+          "buy_and_hold": 0.029439955248489635,
+          "strategy": -0.035534534700938036
+        },
+        "2012": {
+          "average_position": 0.8293333333333333,
+          "buy_and_hold": 0.16098737875265345,
+          "strategy": 0.07211060214563236
+        },
+        "2013": {
+          "average_position": 0.9669312169312169,
+          "buy_and_hold": 0.2934683641931608,
+          "strategy": 0.25527526395568056
+        },
+        "2014": {
+          "average_position": 0.9047619047619048,
+          "buy_and_hold": 0.14367155485326943,
+          "strategy": 0.05821374349414121
+        },
+        "2015": {
+          "average_position": 0.7182539682539683,
+          "buy_and_hold": -0.008492991318685528,
+          "strategy": -0.1397436487094047
+        },
+        "2016": {
+          "average_position": 0.75,
+          "buy_and_hold": 0.14655343218989003,
+          "strategy": 0.07017357825030124
+        },
+        "2017": {
+          "average_position": 0.9800796812749004,
+          "buy_and_hold": 0.21332748071463525,
+          "strategy": 0.19551121197403254
+        },
+        "2018": {
+          "average_position": 0.691899070385126,
+          "buy_and_hold": -0.06417143968992134,
+          "strategy": -0.05494317538089155
+        },
+        "2019": {
+          "average_position": 0.8412698412698413,
+          "buy_and_hold": 0.3402165905704475,
+          "strategy": 0.1115335351133595
+        },
+        "2020": {
+          "average_position": 0.7628458498023716,
+          "buy_and_hold": 0.18167416994459873,
+          "strategy": 0.14168069228798852
+        },
+        "2021": {
+          "average_position": 0.9695767195767195,
+          "buy_and_hold": 0.28600089857294764,
+          "strategy": 0.2320305303283201
+        },
+        "2022": {
+          "average_position": 0.2735723771580345,
+          "buy_and_hold": -0.17991662618920268,
+          "strategy": -0.1484631753022443
+        },
+        "2023": {
+          "average_position": 0.8133333333333334,
+          "buy_and_hold": 0.24706980932071687,
+          "strategy": 0.12887515291247542
+        },
+        "2024": {
+          "average_position": 0.9563492063492064,
+          "buy_and_hold": 0.2642965513788691,
+          "strategy": 0.19992036418529358
+        },
+        "2025": {
+          "average_position": 0.7933333333333332,
+          "buy_and_hold": 0.17708556775978312,
+          "strategy": 0.13646758512920698
+        },
+        "2026": {
+          "average_position": 0.8605769230769231,
+          "buy_and_hold": 0.11902537199186303,
+          "strategy": 0.05965951839518202
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.20000894765076227,
+          "cagr": 0.07675097345741766,
+          "calmar": 0.13848244960696343,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.5542288836978972,
+          "sharpe": 0.4700159035099521,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 1.173116081322568
+        },
+        "strategy": {
+          "annualized_volatility": 0.09749560772355667,
+          "cagr": 0.043061787162762766,
+          "calmar": 0.19324361165117346,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.22283679545637014,
+          "sharpe": 0.48130055239493125,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.5566203751176346
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.1852125057688785,
+          "cagr": 0.11254184666609257,
+          "calmar": 0.2030602337344757,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.5542288836978972,
+          "sharpe": 0.6688302003832151,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 8.385548683388745
+        },
+        "strategy": {
+          "annualized_volatility": 0.10363732649055962,
+          "cagr": 0.06763502423039802,
+          "calmar": 0.30351820529406454,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.22283679545637014,
+          "sharpe": 0.6835055343455625,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 2.951539021795362
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.16915026076003553,
+          "cagr": 0.14950819187880526,
+          "calmar": 0.46649919077970314,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.3204897132381268,
+          "sharpe": 0.9088532270411529,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 3.318935727389518
+        },
+        "strategy": {
+          "annualized_volatility": 0.10943058975015327,
+          "cagr": 0.09277755938256393,
+          "calmar": 0.49806528065281025,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.18627590194795574,
+          "sharpe": 0.8657510278375035,
+          "start": "2016-04-22 00:00:00",
+          "total_return": 1.5385373884090061
+        }
+      }
+    },
+    "TLT": {
+      "activity": {
+        "position_changes": 857,
+        "time_in_market": 0.5493605493605493,
+        "total_fees_fraction_traded": 0.3256666666666667
+      },
+      "calendar_years": {
+        "2005": {
+          "average_position": 0.2692307692307692,
+          "buy_and_hold": 0.024635717771361865,
+          "strategy": 0.0016825597731850994
+        },
+        "2006": {
+          "average_position": 0.5962815405046481,
+          "buy_and_hold": 0.019519552563086684,
+          "strategy": 0.00615708858250863
+        },
+        "2007": {
+          "average_position": 0.6852589641434261,
+          "buy_and_hold": 0.09574284814262635,
+          "strategy": 0.055177471327380934
+        },
+        "2008": {
+          "average_position": 0.7615283267457181,
+          "buy_and_hold": 0.3443404872580076,
+          "strategy": 0.19571623965585894
+        },
+        "2009": {
+          "average_position": 0.36904761904761907,
+          "buy_and_hold": -0.223054901493982,
+          "strategy": -0.23123380031098062
+        },
+        "2010": {
+          "average_position": 0.5568783068783068,
+          "buy_and_hold": 0.08007300794607874,
+          "strategy": 0.06420430655890597
+        },
+        "2011": {
+          "average_position": 0.7235449735449735,
+          "buy_and_hold": 0.3328142787799959,
+          "strategy": 0.23523593642124485
+        },
+        "2012": {
+          "average_position": 0.704,
+          "buy_and_hold": 0.027603087181074404,
+          "strategy": -0.056383941171389784
+        },
+        "2013": {
+          "average_position": 0.1746031746031746,
+          "buy_and_hold": -0.12474733795687554,
+          "strategy": -0.05054284947250487
+        },
+        "2014": {
+          "average_position": 0.9338624338624338,
+          "buy_and_hold": 0.2785159875458898,
+          "strategy": 0.19632237059815183
+        },
+        "2015": {
+          "average_position": 0.5542328042328043,
+          "buy_and_hold": -0.009808771656366289,
+          "strategy": -0.16512437294201687
+        },
+        "2016": {
+          "average_position": 0.7222222222222222,
+          "buy_and_hold": -0.005533369513007869,
+          "strategy": 0.08653809415773228
+        },
+        "2017": {
+          "average_position": 0.6679946879150065,
+          "buy_and_hold": 0.0952610172026247,
+          "strategy": -0.002129640816845857
+        },
+        "2018": {
+          "average_position": 0.3426294820717131,
+          "buy_and_hold": -0.012022518360050416,
+          "strategy": -0.03724675933831356
+        },
+        "2019": {
+          "average_position": 0.8875661375661377,
+          "buy_and_hold": 0.15079778131499366,
+          "strategy": 0.12590849354034606
+        },
+        "2020": {
+          "average_position": 0.6389986824769432,
+          "buy_and_hold": 0.1623435558829145,
+          "strategy": 0.08036083688254636
+        },
+        "2021": {
+          "average_position": 0.4761904761904761,
+          "buy_and_hold": -0.05107347453926325,
+          "strategy": -0.03699091116618336
+        },
+        "2022": {
+          "average_position": 0.09561752988047809,
+          "buy_and_hold": -0.2855289899172119,
+          "strategy": -0.05590532458645592
+        },
+        "2023": {
+          "average_position": 0.3453333333333333,
+          "buy_and_hold": -0.005448215879391594,
+          "strategy": -0.0817120083306907
+        },
+        "2024": {
+          "average_position": 0.5608465608465608,
+          "buy_and_hold": -0.06946578141480308,
+          "strategy": -0.13569904405678312
+        },
+        "2025": {
+          "average_position": 0.49333333333333335,
+          "buy_and_hold": 0.0397471063435737,
+          "strategy": -0.09778087521256384
+        },
+        "2026": {
+          "average_position": 0.24839743589743585,
+          "buy_and_hold": -0.03071610288110571,
+          "strategy": -0.05297472630226163
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.13976800687843158,
+          "cagr": 0.07241699247864952,
+          "calmar": 0.2682897851223782,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.26992079644633915,
+          "sharpe": 0.5700936929797725,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 1.0830429289186339
+        },
+        "strategy": {
+          "annualized_volatility": 0.10867445778406132,
+          "cagr": 0.01925358422699852,
+          "calmar": 0.07328113123549894,
+          "days": 2645,
+          "end": "2016-04-21 00:00:00",
+          "max_drawdown": -0.2627359035318996,
+          "sharpe": 0.22973070502557671,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.221604801197953
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.14063338295201613,
+          "cagr": 0.02794548136479036,
+          "calmar": 0.05568440995228786,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.5018546733050583,
+          "sharpe": 0.26625427091911436,
+          "start": "2005-10-18 00:00:00",
+          "total_return": 0.7837098790662864
+        },
+        "strategy": {
+          "annualized_volatility": 0.10200638016633465,
+          "cagr": -0.004996121339770898,
+          "calmar": -0.010329669486470664,
+          "days": 5291,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.48366710535265367,
+          "sharpe": 0.001859363573757377,
+          "start": "2005-10-18 00:00:00",
+          "total_return": -0.09982099565073954
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.14146954162606482,
+          "cagr": -0.01466609193948043,
+          "calmar": -0.029223782739521215,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.5018546733050586,
+          "sharpe": -0.033762879385452325,
+          "start": "2016-04-22 00:00:00",
+          "total_return": -0.14369989484937973
+        },
+        "strategy": {
+          "annualized_volatility": 0.09486864346579184,
+          "cagr": -0.02866004746840778,
+          "calmar": -0.059255730131804234,
+          "days": 2646,
+          "end": "2026-10-29 00:00:00",
+          "max_drawdown": -0.4836671053526538,
+          "sharpe": -0.25906518077479285,
+          "start": "2016-04-22 00:00:00",
+          "total_return": -0.2631176600922748
+        }
+      }
+    }
+  },
+  "verdict": "XASSET_DOES_NOT_SUPPORT"
+}
