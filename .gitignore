@@ -20,3 +20,5 @@ data/binance_usdm_BTCUSDT_1m_20230101_20230415.csv.manifest.json
 data/binance_usdm_BTCUSDT_1m_20230415_20240101.csv.manifest.json
 .venv-local/
 data/binance_usdm_BTCUSDT_funding_20190901_20261101.csv.manifest.json
+data/binance_spot_BTCUSDT_1d_20170817_20261101.csv.manifest.json
+data/binance_spot_ETHUSDT_1d_20170817_20261101.csv.manifest.json
