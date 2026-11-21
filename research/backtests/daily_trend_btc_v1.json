@@ -1,0 +1,287 @@
+{
+  "datasets": {
+    "BTCUSDT": {
+      "path": "data/binance_spot_BTCUSDT_1d_20170817_20261101.csv",
+      "sha256": "df09a7787ce4d3bc025213b7a79d3b0e56bfb7135e2a8f9ceaca5e531100b925"
+    },
+    "ETHUSDT": {
+      "path": "data/binance_spot_ETHUSDT_1d_20170817_20261101.csv",
+      "sha256": "ea1cbef7312ec82476904cd4243b9a871b9159f5e4e7b7b810c763036e63c308"
+    }
+  },
+  "frozen": {
+    "cash_yield": 0.0,
+    "execution": "next_open",
+    "fee_rate": 0.001,
+    "sma_lengths": [
+      50,
+      100,
+      200
+    ],
+    "warmup_days": 199
+  },
+  "hypothesis_id": "HYP-DAILY-TREND-BTC-001",
+  "results": {
+    "BTCUSDT": {
+      "activity": {
+        "position_changes": 320,
+        "time_in_market": 0.5275142314990512,
+        "total_fees_fraction_traded": 0.11733333333333335
+      },
+      "calendar_years": {
+        "2018": {
+          "average_position": 0.1401766004415011,
+          "buy_and_hold": -0.6788962758685125,
+          "strategy": -0.35025159616202384
+        },
+        "2019": {
+          "average_position": 0.5342465753424658,
+          "buy_and_hold": 0.9440132064205686,
+          "strategy": 0.9116717871301494
+        },
+        "2020": {
+          "average_position": 0.7540983606557377,
+          "buy_and_hold": 3.019828386544437,
+          "strategy": 2.1496970124908596
+        },
+        "2021": {
+          "average_position": 0.6648401826484017,
+          "buy_and_hold": 0.5978952157803163,
+          "strategy": 0.5008768788891962
+        },
+        "2022": {
+          "average_position": 0.09863013698630137,
+          "buy_and_hold": -0.6420841886295776,
+          "strategy": -0.2582651939695223
+        },
+        "2023": {
+          "average_position": 0.7461187214611873,
+          "buy_and_hold": 1.556170228458023,
+          "strategy": 1.054306280165883
+        },
+        "2024": {
+          "average_position": 0.7422586520947175,
+          "buy_and_hold": 1.2130576455446782,
+          "strategy": 0.7580408899964659
+        },
+        "2025": {
+          "average_position": 0.5817351598173516,
+          "buy_and_hold": -0.0633473326493954,
+          "strategy": -0.02432649738421988
+        },
+        "2026": {
+          "average_position": 0.394939493949395,
+          "buy_and_hold": -0.11728077504378143,
+          "strategy": 0.09973415583486234
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.7389404164623581,
+          "cagr": 0.12573350490852397,
+          "calmar": 0.17429941356824757,
+          "days": 1581,
+          "end": "2022-07-02 00:00:00+00:00",
+          "max_drawdown": -0.7213650484216492,
+          "sharpe": 0.5375979518478325,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 0.6702966857053414
+        },
+        "strategy": {
+          "annualized_volatility": 0.4653014698303895,
+          "cagr": 0.46184553047103694,
+          "calmar": 1.1612834546633242,
+          "days": 1581,
+          "end": "2022-07-02 00:00:00+00:00",
+          "max_drawdown": -0.3977026699350795,
+          "sharpe": 1.0473705318183666,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 4.1793100311342455
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.620609526399803,
+          "cagr": 0.24579825991412307,
+          "calmar": 0.320762968670781,
+          "days": 3162,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.7662925085545056,
+          "sharpe": 0.6689494266130542,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 5.712200259761029
+        },
+        "strategy": {
+          "annualized_volatility": 0.39970891755796945,
+          "cagr": 0.3857092371536075,
+          "calmar": 0.7809826027590345,
+          "days": 3162,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.4938768620337818,
+          "sharpe": 1.0146717440607964,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 15.877473970474167
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.47383693576569996,
+          "cagr": 0.3786684838266152,
+          "calmar": 0.7148496511233626,
+          "days": 1581,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.5297176591351065,
+          "sharpe": 0.9139429338574893,
+          "start": "2022-07-03 00:00:00+00:00",
+          "total_return": 3.0185676695673687
+        },
+        "strategy": {
+          "annualized_volatility": 0.3210816685119837,
+          "cagr": 0.3135382979309105,
+          "calmar": 1.0767251771696444,
+          "days": 1581,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.29119621661963857,
+          "sharpe": 1.0084775084759718,
+          "start": "2022-07-03 00:00:00+00:00",
+          "total_return": 2.258633653714326
+        }
+      }
+    },
+    "ETHUSDT": {
+      "activity": {
+        "position_changes": 315,
+        "time_in_market": 0.5128610584018554,
+        "total_fees_fraction_traded": 0.111
+      },
+      "calendar_years": {
+        "2018": {
+          "average_position": 0.11147902869757173,
+          "buy_and_hold": -0.8484716869773752,
+          "strategy": -0.2673562678975673
+        },
+        "2019": {
+          "average_position": 0.44200913242009127,
+          "buy_and_hold": -0.0174210726511993,
+          "strategy": 0.2546409324660186
+        },
+        "2020": {
+          "average_position": 0.8014571948998178,
+          "buy_and_hold": 4.701610405698362,
+          "strategy": 1.667378648696269
+        },
+        "2021": {
+          "average_position": 0.8264840182648401,
+          "buy_and_hold": 3.9920154259797433,
+          "strategy": 2.3857441358700346
+        },
+        "2022": {
+          "average_position": 0.1762557077625571,
+          "buy_and_hold": -0.6746304628123451,
+          "strategy": -0.3012854468431887
+        },
+        "2023": {
+          "average_position": 0.7105022831050227,
+          "buy_and_hold": 0.9077107003419342,
+          "strategy": 0.5287986164358376
+        },
+        "2024": {
+          "average_position": 0.6211293260473588,
+          "buy_and_hold": 0.4627388939773096,
+          "strategy": 0.30965761740105413
+        },
+        "2025": {
+          "average_position": 0.4484018264840182,
+          "buy_and_hold": -0.109692669978248,
+          "strategy": 0.40027467494665236
+        },
+        "2026": {
+          "average_position": 0.3861386138613862,
+          "buy_and_hold": -0.244345733851564,
+          "strategy": 0.07859805777995299
+        }
+      },
+      "first_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.9685216735343722,
+          "cagr": 0.04895121787684387,
+          "calmar": 0.05418208551624813,
+          "days": 1581,
+          "end": "2022-07-02 00:00:00+00:00",
+          "max_drawdown": -0.9034576172259808,
+          "sharpe": 0.5452386869886428,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 0.22999030261141673
+        },
+        "strategy": {
+          "annualized_volatility": 0.646332570598514,
+          "cagr": 0.5700341345850293,
+          "calmar": 1.0201273161981044,
+          "days": 1581,
+          "end": "2022-07-02 00:00:00+00:00",
+          "max_drawdown": -0.558787246977642,
+          "sharpe": 1.0269168820922416,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 6.056373905456604
+        }
+      },
+      "full": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.8278808390873387,
+          "cagr": 0.1160410606566944,
+          "calmar": 0.1284410673441355,
+          "days": 3162,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.9034576172259808,
+          "sharpe": 0.5523573236837473,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 1.588534713007415
+        },
+        "strategy": {
+          "annualized_volatility": 0.5350944853130747,
+          "cagr": 0.39188277281178285,
+          "calmar": 0.7013094427823667,
+          "days": 3162,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.558787246977642,
+          "sharpe": 0.8883678341185911,
+          "start": "2018-03-05 00:00:00+00:00",
+          "total_return": 16.540089607862658
+        }
+      },
+      "second_half": {
+        "buy_and_hold": {
+          "annualized_volatility": 0.6581378644958906,
+          "cagr": 0.1874219008895388,
+          "calmar": 0.2774440813033823,
+          "days": 1581,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.6755303627637848,
+          "sharpe": 0.5872578140034429,
+          "start": "2022-07-03 00:00:00+00:00",
+          "total_return": 1.1045163587970066
+        },
+        "strategy": {
+          "annualized_volatility": 0.3935645990988042,
+          "cagr": 0.2339461993686327,
+          "calmar": 0.6466433262774905,
+          "days": 1581,
+          "end": "2026-10-30 00:00:00+00:00",
+          "max_drawdown": -0.3617855313150493,
+          "sharpe": 0.7292109869541846,
+          "start": "2022-07-03 00:00:00+00:00",
+          "total_return": 1.485708643400986
+        }
+      }
+    }
+  },
+  "verdict": "TREND_REJECT",
+  "verdict_checks": {
+    "btc_first_half_sharpe_beats_buy_hold": true,
+    "btc_full_cagr_positive": true,
+    "btc_full_drawdown_within_60pct_of_buy_hold": false,
+    "btc_full_sharpe_beats_buy_hold": true,
+    "btc_second_half_sharpe_beats_buy_hold": true,
+    "eth_full_sharpe_beats_buy_hold": true
+  }
+}

@@ -1,0 +1,72 @@
+hypothesis_id: HYP-DAILY-TREND-BTC-001
+protocol_file: research/hypotheses/daily_trend_btc_v1.md
+status: TREND_REJECT
+experiment_id: EXP-000027
+result_file: research/backtests/daily_trend_btc_v1.json
+tested_at: "2026-11-21"
+purpose: discovery_baseline
+registered_at: "2026-11-21"
+registered_before_dataset_download: true
+contamination: public_knowledge_of_btc_history_disclosed
+market: {venue: binance_spot, symbol: BTCUSDT, timeframe: 1d, direction: long_flat, leverage: 1}
+control_market: {venue: binance_spot, symbol: ETHUSDT, timeframe: 1d}
+
+datasets:
+  authorization_scope: TASK-035B
+  primary:
+    path: data/binance_spot_BTCUSDT_1d_20170817_20261101.csv
+    period_start: "2017-08-17T00:00:00Z"
+    period_end: "2026-11-01T00:00:00Z"
+    period_end_inclusive: false
+    sha256: df09a7787ce4d3bc025213b7a79d3b0e56bfb7135e2a8f9ceaca5e531100b925
+  control:
+    path: data/binance_spot_ETHUSDT_1d_20170817_20261101.csv
+    period_start: "2017-08-17T00:00:00Z"
+    period_end: "2026-11-01T00:00:00Z"
+    period_end_inclusive: false
+    sha256: ea1cbef7312ec82476904cd4243b9a871b9159f5e4e7b7b810c763036e63c308
+  reserved_for_forward_confirmation: from_2026-11-01
+
+signal:
+  sma_lengths: [50, 100, 200]
+  sma_includes_current_day: true
+  vote: close[t] > sma_n[t]
+  position: mean_of_three_votes
+  position_values: [0, 0.3333333333, 0.6666666667, 1]
+  decided: after_close_t
+  held: open[t+1] -> open[t+2]
+  cash_yield: 0
+  warmup_days: 199
+  benchmark_start: same_day_as_strategy
+  prohibited_components: [volatility_targeting, stop_loss, filters, regime_classifier, leverage, shorting]
+
+costs:
+  fee_rate_per_unit_traded: 0.001
+  charged_on: abs(position[t] - position[t-1])
+  buy_and_hold: one_entry_fee
+  slippage_modeled: false
+
+metrics:
+  windows: [full, first_half, second_half]
+  split: midpoint_day_of_evaluation_window
+  per_window: [cagr, annualized_volatility_365, sharpe_rf0, max_drawdown, calmar]
+  extras: [time_in_market, position_changes, total_fees, calendar_year_returns]
+
+verdict_rules:
+  TREND_CANDIDATE_requires_all:
+    - btc_full_strategy_cagr > 0
+    - btc_full_strategy_sharpe > btc_full_buy_and_hold_sharpe
+    - abs(btc_full_strategy_max_drawdown) <= 0.6 * abs(btc_full_buy_and_hold_max_drawdown)
+    - btc_first_half_strategy_sharpe > btc_first_half_buy_and_hold_sharpe
+    - btc_second_half_strategy_sharpe > btc_second_half_buy_and_hold_sharpe
+    - eth_full_strategy_sharpe > eth_full_buy_and_hold_sharpe
+  otherwise: TREND_REJECT
+  candidate_next_step: forward_paper_tracking_from_2026-11-01_same_frozen_rule
+  live_trading_authorized: false
+
+anti_tuning_constraints:
+  changing_sma_lengths_vote_timing_or_fees: prohibited
+  adding_filters_leverage_shorting_or_vol_scaling: prohibited
+  changing_window_or_split: prohibited
+  swapping_control_asset: prohibited
+  termination_rule: if_TREND_REJECT_this_hypothesis_ends
