@@ -58,6 +58,12 @@ jobs:
           git commit -m "Update daily trend BTC forward paper test ($(date -u +%Y-%m-%d))"
           git push
 
+      - name: Post monthly report to the activity log (email)
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment 207 --body-file research/forward/daily_trend_btc_fwd_v1/report.md
+
       - name: Open issue on verdict
         env:
           GH_TOKEN: ${{ github.token }}

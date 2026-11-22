@@ -7,6 +7,15 @@ on:
   schedule:
     - cron: "10 0 * * *"   # 00:10 UTC, after the daily close
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Post the latest ledger event to the activity log even without a change"
+        type: boolean
+        default: false
+
+env:
+  ACTIVITY_ISSUE: "207"
+  LEDGER: research/paper/trend_bot_v1/ledger.jsonl
 
 permissions:
   contents: write
@@ -31,7 +40,10 @@ jobs:
         run: python -m pip install -q pandas==2.2.3 numpy requests pydantic pytest
 
       - name: Run tests
-        run: python -m pytest -q -p no:cacheprovider app/trend_bot/test_bot.py
+        run: python -m pytest -q -p no:cacheprovider app/trend_bot/test_bot.py app/trend_bot/test_notify.py
+
+      - name: Count ledger lines before the run
+        run: echo "LEDGER_LINES_BEFORE=$( [ -f "$LEDGER" ] && wc -l < "$LEDGER" || echo 0)" >> "$GITHUB_ENV"
 
       - name: Paper run
         env:
@@ -51,6 +63,15 @@ jobs:
           git commit -m "Trend bot paper run ($(date -u +%Y-%m-%d))"
           git pull --rebase -q
           git push
+
+      - name: Notify on position change (email via the activity-log issue)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          force=""
+          if [ "${{ inputs.test_notification }}" = "true" ]; then force="--force"; fi
+          body=$(python -m app.trend_bot.notify --ledger "$LEDGER" --since-line "$LEDGER_LINES_BEFORE" $force)
+          if [ -n "$body" ]; then gh issue comment "$ACTIVITY_ISSUE" --body "$body"; else echo "Nothing to notify"; fi
 
       - name: Open issue on failure
         if: failure()
